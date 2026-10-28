@@ -6,9 +6,9 @@
 .vscode/ipch
 
 # ROS 2
-ros2_ws/build/
-ros2_ws/install/
-ros2_ws/log/
+roverto_ws/build/
+roverto_ws/install/
+roverto_ws/log/
 *.bag
 *.db3
 *.mcap
