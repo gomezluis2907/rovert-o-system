@@ -1,0 +1,45 @@
+# Colcon / ROS build artifacts
+build/
+install/
+log/
+
+# Rosbag recording data & runtime logs
+*.bag
+*.db3
+*.db3-journal
+*.log
+
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C/C++ compilation artifacts & libraries
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+core
+*.core
+
+# Editor, IDE & environment settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.un~
+.directory
+.env
+
+# Database & cache files (e.g. VS Code IntelliSense)
+*.db
+*.db-shm
+*.db-wal
+
+# Operating System artifacts
+.DS_Store
+Thumbs.db
+ehthumbs.db
