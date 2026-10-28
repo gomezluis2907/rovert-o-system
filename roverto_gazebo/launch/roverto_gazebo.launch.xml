@@ -1,0 +1,48 @@
+<launch>
+
+    <!-- URDF xacro path -->
+    <let name="urdf_path"
+         value="$(find-pkg-share roverto_description)/urdf/roverto.urdf.xacro" />
+
+    <!-- World path -->
+    <let name="sdf_path"
+         value="$(find-pkg-share roverto_gazebo)/worlds/tunnel.sdf" />
+
+    <!-- Gazebo bridge config path -->
+    <let name="gazebo_config_path"
+         value="$(find-pkg-share roverto_gazebo)/config/gazebo_bridge.yaml" />
+
+    <!-- Robot State Publisher initialization -->
+    <node pkg="robot_state_publisher" exec="robot_state_publisher">
+        <param name="robot_description"
+               value="$(command 'xacro $(var urdf_path)')" />
+        <param name="use_sim_time" value="true" />
+    </node>
+
+    <!-- Configures Gazebo resource path so it resolves package assets -->
+    <set_env name="GZ_SIM_RESOURCE_PATH"
+             value="$(find-pkg-prefix roverto_description)/share" />
+
+    <!-- Gazebo starts with the tunnel world and simulation running (-r) -->
+    <include file="$(find-pkg-share ros_gz_sim)/launch/gz_sim.launch.py">
+        <arg name="gz_args" value="-r -v 4 $(var sdf_path)" />
+    </include>
+
+    <!-- Spawn Roverto into Gazebo -->
+    <node pkg="ros_gz_sim" exec="create"
+          args="-name roverto -topic robot_description -z 0.05" />
+
+    <!-- Bridge Gazebo topics (/clock, /scan) to ROS 2 -->
+    <node pkg="ros_gz_bridge" exec="parameter_bridge">
+        <param name="config_file" value="$(var gazebo_config_path)" />
+    </node>
+
+    <!-- RViz will be uncommented once the .rviz config is ready
+    <let name="rviz_config_path"
+         value="$(find-pkg-share roverto_description)/rviz/roverto.rviz" />
+
+    <node pkg="rviz2" exec="rviz2" output="screen"
+          args="-d $(var rviz_config_path)" />
+    -->
+
+</launch>
