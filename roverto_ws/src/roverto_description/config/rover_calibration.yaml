@@ -18,5 +18,5 @@ max_ticks_per_cycle: 500    # sanity clamp: reject per-packet tick deltas larger
 # ---- Safety guard -----------------------------------------------------------
 front_stop_distance: 0.45   # m
 flank_safe_distance: 0.30   # m
-linear_speed: 0.20          # m/s
+linear_speed: 0.04          # m/s (SRS cap: 4 cm/s)
 angular_speed: 0.50         # rad/s

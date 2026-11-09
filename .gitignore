@@ -6,6 +6,9 @@
 .vscode/ipch
 
 # ROS 2
+build/
+install/
+log/
 roverto_ws/build/
 roverto_ws/install/
 roverto_ws/log/
