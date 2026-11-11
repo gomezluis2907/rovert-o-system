@@ -73,6 +73,7 @@ def serial_reader(gs, app, label):
         try:
             data = gs.ser.read(512)
         except Exception:
+            gs.link_lost = True  # el dashboard de "Gráficas" lo muestra como desconectado
             app.after(0, lambda: label.configure(text="Puerto serial desconectado"))
             return
         if not data:
@@ -87,24 +88,43 @@ def serial_reader(gs, app, label):
         # TODO: decodificar aquí los paquetes de telemetría cuando Telecom defina su formato
 
 
+def start_demo(app, period_ms=200):
+    """Inyecta datos simulados en los parámetros (para probar gráficas y grabación sin el rover)."""
+    import math
+    params, t0 = app.view.parameters, time.time()
+
+    def step():
+        t = time.time() - t0
+        params.rover_params.set_ambiente(f"{24 + 2 * math.sin(t / 9):.2f}")
+        params.rover_params.set_bateria(f"{31 + 4 * math.sin(t / 15 + 1):.2f}")
+        params.map_params.set_velocidad(f"{0.04 + 0.01 * math.sin(t / 3):.3f}")
+        params.map_params.set_aceleracion_x(f"{0.20 * math.sin(t / 2):.3f}")
+        params.map_params.set_aceleracion_y(f"{0.15 * math.cos(t / 2.7):.3f}")
+        params.map_params.set_aceleracion_z(f"{0.05 * math.sin(t / 1.3):.3f}")
+        app.after(period_ms, step)
+
+    step()
+
+
 if __name__ == "__main__":
     # instancia de aplicacion
     app = interface.App(title="Interface", size=(1920, 1080))
     # PARA DIEGO que realizara la simulacion e inyeccion de datos a la interfaz
     # Utiliza las siguientes funciones y sustituye "a" por el valor que quieras asignar a la variable de la interfaz, ya sea int, float o str.
-    # === app.rover_params.set_ambiente(a) ===
-    # === app.rover_params.set_bateria(a) ===
-    # === app.map_params.set_velocidad(a) ===
-    # === app.map_params.set_aceleracion_x(a) ===
-    # === app.map_params.set_aceleracion_y(a) ===
-    # === app.map_params.set_aceleracion_z(a) ===
+    # === app.view.parameters.rover_params.set_ambiente(a) ===
+    # === app.view.parameters.rover_params.set_bateria(a) ===
+    # === app.view.parameters.map_params.set_velocidad(a) ===
+    # === app.view.parameters.map_params.set_aceleracion_x(a) ===
+    # === app.view.parameters.map_params.set_aceleracion_y(a) ===
+    # === app.view.parameters.map_params.set_aceleracion_z(a) ===
     # TODO: asignar temperaturas (BME688/DS18B20), velocidad y aceleración (BNO085) al llegar su telemetría
 
     gs = GroundStationSerial(port=GS_PORT)
-    ins = app.instructions
+    params = app.view.parameters  # los frames viven dentro de la pestaña "Parámetros"
+    ins = params.instructions
 
     # Etiqueta del mapa dentro del frame existente
-    map_label = ctk.CTkLabel(master=app.map, text="Esperando mapa...", font=app.fonts[1])
+    map_label = ctk.CTkLabel(master=params.map, text="Esperando mapa...", font=params.fonts[1])
     map_label.pack(expand=True, fill="both", padx=24, pady=24)
 
     def on_send():
@@ -124,6 +144,12 @@ if __name__ == "__main__":
 
     ins.button_send.configure(command=on_send)
     ins.button_stop.configure(command=on_stop)
+
+    # modo demo: `python main.py --demo` (o GS_DEMO=1) genera lecturas simuladas
+    demo = "--demo" in sys.argv or os.environ.get("GS_DEMO") == "1"
+    if demo:
+        start_demo(app)
+    app.view.graphics.set_link(gs, GS_PORT, demo)  # solo para mostrar el estado del enlace
 
     if gs.ser is None:
         map_label.configure(text=f"Sin ESP32-GS en {GS_PORT} (dry-run)")
