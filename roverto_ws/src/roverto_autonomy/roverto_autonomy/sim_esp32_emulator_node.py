@@ -64,8 +64,14 @@ class SimEsp32Emulator(Node):
         self.obstacle = msg.data
 
     def on_command(self, msg: Float32):
+        # Non-positive distance (0.0 from Packet 4 STOP) halts the rover and returns to STANDBY
         if msg.data <= 0.0:
-            self.get_logger().warn(f'Ignoring non-positive target {msg.data}')
+            self.status = STANDBY
+            self.target = 0.0
+            self.pass_pending = False
+            self.pass_start = None
+            self._publish(0.0, 0.0)
+            self.get_logger().info('STOP command received -> STANDBY')
             return
         if self.pose is None:
             self.get_logger().warn('No /odom yet; ignoring command')

@@ -1,10 +1,11 @@
 <launch>
-  <!-- Raspberry Pi 4 bringup for the physical rover (no Gazebo, no ESP32 emulator).
-       Wheel odometry + TF (odom -> base_footprint) come from esp32_bridge_node. -->
+  <!-- Raspberry Pi 4 bringup for the physical rover (no Gazebo).
+       2D Laser Odometry (laser_odom_node) provides /odom + TF (odom -> base_footprint).
+       sim_esp32_emulator_node tracks the 5 m mission on the Pi; esp32_bridge_node handles UART. -->
   <arg name="use_sim_time" default="false" description="Always false on hardware"/>
   <arg name="serial_port" default="/dev/ttyAMA0" description="UART to the onboard ESP32"/>
   <arg name="mock_serial" default="false" description="In-memory loopback instead of a real UART"/>
-  <arg name="lidar_port" default="/dev/ttyUSB0" description="Serial port of the LD19 (e.g. /dev/ttyAMA0 on the Pi if wired to UART)"/>
+  <arg name="lidar_port" default="/dev/ttyUSB0" description="Serial port of the LD19 (or /dev/ldlidar)"/>
   <arg name="launch_lidar_driver" default="false"
        description="Start the LD19 driver (needs ldlidar_stl_ros2 cloned and built on the Pi)"/>
 
@@ -15,12 +16,7 @@
     <param name="use_sim_time" value="$(var use_sim_time)"/>
   </node>
 
-  <!-- Optional LD19 driver. Enable with launch_lidar_driver:=true once ldlidar_stl_ros2 is
-       cloned into the Pi workspace. Equivalent manual invocation:
-         ros2 run ldlidar_stl_ros2 ldlidar_stl_ros2_node, with ROS parameters
-           product_name=LDLiDAR_LD19  topic_name=scan  frame_id=laser_frame
-           port_name=/dev/ttyUSB0  port_baudrate=230400  laser_scan_dir=true
-       Verify the scan direction on the bench (REP-103 expects counter-clockwise). -->
+  <!-- LD19 driver with rear 135..225 deg arc cropped out (chassis behind the front shelf) -->
   <node pkg="ldlidar_stl_ros2" exec="ldlidar_stl_ros2_node" name="ld19" output="screen"
         if="$(var launch_lidar_driver)">
     <param name="product_name" value="LDLiDAR_LD19"/>
@@ -29,13 +25,27 @@
     <param name="port_name" value="$(var lidar_port)"/>
     <param name="port_baudrate" value="230400"/>
     <param name="laser_scan_dir" value="true"/>
-    <param name="enable_angle_crop_func" value="false"/>
+    <param name="enable_angle_crop_func" value="true"/>
+    <param name="angle_crop_min" value="135.0"/>
+    <param name="angle_crop_max" value="225.0"/>
+  </node>
+
+  <!-- Scan-to-scan 2D Laser Odometry (/scan -> /odom + odom -> base_footprint TF) -->
+  <node pkg="roverto_autonomy" exec="laser_odom_node" output="screen">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <!-- Pi-side Mission Tracker: tracks "Advance D meters" using /odom and publishes /rover_status -->
+  <node pkg="roverto_autonomy" exec="sim_esp32_emulator_node" name="mission_tracker_node" output="screen">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
   </node>
 
   <node pkg="roverto_autonomy" exec="esp32_bridge_node" output="screen">
     <param name="use_sim_time" value="$(var use_sim_time)"/>
     <param name="serial_port" value="$(var serial_port)"/>
     <param name="mock_serial" value="$(var mock_serial)"/>
+    <param name="publish_odom" value="false"/>
+    <param name="publish_tf" value="false"/>
   </node>
 
   <node pkg="roverto_autonomy" exec="lidar_guard_node" output="screen">

@@ -17,8 +17,8 @@ Design constraints: lightweight stack. No `robot_localization`, no `cmd_vel_mux`
 map -> odom -> base_footprint -> base_link -> laser_frame
 ```
 - `map -> odom`: `slam_toolbox`
-- `odom -> base_footprint`: DiffDrive (sim) / wheel odometry node (hardware)
-- `base_footprint -> base_link -> laser_frame` (+ wheel links): `robot_state_publisher` from the xacro
+- `odom -> base_footprint`: DiffDrive (sim) / `laser_odom_node` 2D scan-to-scan ICP (hardware)
+- `base_footprint -> base_link -> laser_frame` (+ wheel links): `robot_state_publisher` from the xacro (with `laser_frame` mounted on the centered front shelf and rear `135°..225°` rays cropped)
 
 ## Single Source of Calibration
 `roverto_description/config/rover_calibration.yaml` is the only place for physical constants
@@ -60,6 +60,15 @@ tick clamp, safety distances, speeds). The xacro loads it via `xacro.load_yaml`.
 | xor_checksum | uint8 | |
 
 Note: 6 header + 198 payload + 1 checksum = 205 bytes at maximum payload (within the 206 B budget).
+
+### Packet 4: ESP32 -> Pi (or GS -> ESP32-GS), 8 bytes, `<BBBfB`
+| Field | Type | Notes |
+|---|---|---|
+| sync1 | uint8 | `0xAA` |
+| sync2 | uint8 | `0x88` |
+| cmd_id | uint8 | 1=ADVANCE, 0=STOP |
+| distance_m | float32 | target distance in meters |
+| xor_checksum | uint8 | |
 
 ## Workspace Packages (`roverto_ws/src`)
 | Package | Type | Role |

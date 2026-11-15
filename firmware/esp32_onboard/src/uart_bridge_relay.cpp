@@ -12,7 +12,7 @@
 #endif
 #define UART_PI_BAUD 115200
 
-static constexpr uint8_t SYNC = 0xAA, ID_P1 = 0x55, ID_P2 = 0x66, ID_P3 = 0x77;
+static constexpr uint8_t SYNC = 0xAA, ID_P1 = 0x55, ID_P2 = 0x66, ID_P3 = 0x77, ID_P4 = 0x88;
 static constexpr size_t P3_MAX_PAYLOAD = 198, P3_MAX_FRAME = 6 + P3_MAX_PAYLOAD + 1;
 
 // Estado compartido con el resto del firmware
@@ -30,8 +30,17 @@ __attribute__((weak)) void telecom_send_map_chunk(const uint8_t *frame, size_t l
     (void)frame; (void)len;
 }
 
-// Packet 1 (12 B, <BBiiBB) hacia la Pi
-// TODO (Electrónica): leer ticks de encoders y transmitir Packet 1 (0xAA 0x55) a 10 Hz por Serial1 llamando a esta función
+// Packet 4 (8 B, <BBBfB) hacia la Pi: reenvía comando GS (1=AVANZAR distance_m, 0=DETENER)
+// TODO (Telecom): llamar a bridge_send_gs_command(cmd_id, distance_m) al recibir orden desde ESP32-GS por ESP-NOW
+void bridge_send_gs_command(uint8_t cmd_id, float distance_m) {
+    uint8_t f[8] = {SYNC, ID_P4, cmd_id};
+    memcpy(&f[3], &distance_m, 4);
+    f[7] = xor8(f, 7);
+    Serial1.write(f, sizeof(f));
+}
+
+// Packet 1 (12 B, <BBiiBB) hacia la Pi (opcional si no hay encoders)
+// TODO (Electrónica): si se agregan sensores/estado extra, usar un ID distinto a 0x55/0x66/0x77/0x88
 void bridge_send_packet1(int32_t left_ticks, int32_t right_ticks, uint8_t status) {
     uint8_t f[12] = {SYNC, ID_P1};
     memcpy(&f[2], &left_ticks, 4);   // ESP32 es little-endian

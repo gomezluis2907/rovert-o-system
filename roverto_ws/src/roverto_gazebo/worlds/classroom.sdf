@@ -1,0 +1,172 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <world name="classroom_world">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- ================= PLUGINS ================= -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+
+    <!-- Light -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.85 0.85 0.85 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.4 0.2 -0.9</direction>
+    </light>
+
+    <!-- Ground Plane -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision"><geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry></collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+          <material><ambient>0.82 0.82 0.80 1</ambient><diffuse>0.82 0.82 0.80 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ================= 8m x 8m SQUARE CLASSROOM WALLS ================= -->
+    <!-- x in [-1.5, 6.5] (rover spawns at 0,0 with 6.5 m forward room), y in [-4.0, 4.0] -->
+    <model name="wall_north">
+      <static>true</static>
+      <pose>2.5 4.05 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>8.2 0.10 1.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>8.2 0.10 1.0</size></box></geometry>
+          <material><ambient>0.9 0.9 0.88 1</ambient><diffuse>0.9 0.9 0.88 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="wall_south">
+      <static>true</static>
+      <pose>2.5 -4.05 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>8.2 0.10 1.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>8.2 0.10 1.0</size></box></geometry>
+          <material><ambient>0.9 0.9 0.88 1</ambient><diffuse>0.9 0.9 0.88 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="wall_east_front">
+      <static>true</static>
+      <pose>6.55 0.0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.10 8.0 1.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 8.0 1.0</size></box></geometry>
+          <material><ambient>0.9 0.9 0.88 1</ambient><diffuse>0.9 0.9 0.88 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="wall_west_back">
+      <static>true</static>
+      <pose>-1.55 0.0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.10 8.0 1.0</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 8.0 1.0</size></box></geometry>
+          <material><ambient>0.9 0.9 0.88 1</ambient><diffuse>0.9 0.9 0.88 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ================= DISPERSED TABLES (4 legs + top) & CHAIRS ================= -->
+    <!-- Table 1 (left-center, near x=2.0 m so the rover dodges right) -->
+    <model name="table_1">
+      <static>true</static>
+      <pose>2.0 0.25 0 0 0 0</pose>
+      <link name="link">
+        <visual name="top"><pose>0 0 0.72 0 0 0</pose><geometry><box><size>0.60 0.80 0.04</size></box></geometry>
+          <material><ambient>0.65 0.45 0.25 1</ambient><diffuse>0.65 0.45 0.25 1</diffuse></material></visual>
+        <collision name="leg1_c"><pose>0.25 0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></collision>
+        <visual name="leg1_v"><pose>0.25 0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></visual>
+        <collision name="leg2_c"><pose>0.25 -0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></collision>
+        <visual name="leg2_v"><pose>0.25 -0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></visual>
+        <collision name="leg3_c"><pose>-0.25 0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></collision>
+        <visual name="leg3_v"><pose>-0.25 0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></visual>
+        <collision name="leg4_c"><pose>-0.25 -0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></collision>
+        <visual name="leg4_v"><pose>-0.25 -0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></visual>
+      </link>
+    </model>
+
+    <!-- Table 2 (right-center, near x=3.8 m) -->
+    <model name="table_2">
+      <static>true</static>
+      <pose>3.8 -0.30 0 0 0 0</pose>
+      <link name="link">
+        <visual name="top"><pose>0 0 0.72 0 0 0</pose><geometry><box><size>0.60 0.80 0.04</size></box></geometry>
+          <material><ambient>0.65 0.45 0.25 1</ambient><diffuse>0.65 0.45 0.25 1</diffuse></material></visual>
+        <collision name="leg1_c"><pose>0.25 0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></collision>
+        <visual name="leg1_v"><pose>0.25 0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></visual>
+        <collision name="leg2_c"><pose>0.25 -0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></collision>
+        <visual name="leg2_v"><pose>0.25 -0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></visual>
+        <collision name="leg3_c"><pose>-0.25 0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></collision>
+        <visual name="leg3_v"><pose>-0.25 0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></visual>
+        <collision name="leg4_c"><pose>-0.25 -0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></collision>
+        <visual name="leg4_v"><pose>-0.25 -0.35 0.35 0 0 0</pose><geometry><cylinder><radius>0.03</radius><length>0.70</length></cylinder></geometry></visual>
+      </link>
+    </model>
+
+    <!-- Table 3 & 4 (outer classroom rows for rich SLAM scan-matching features) -->
+    <model name="table_north_1">
+      <static>true</static>
+      <pose>1.5 2.2 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.60 1.00 0.70</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.60 1.00 0.70</size></box></geometry>
+          <material><ambient>0.60 0.42 0.24 1</ambient><diffuse>0.60 0.42 0.24 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="table_north_2">
+      <static>true</static>
+      <pose>4.2 2.2 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.60 1.00 0.70</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.60 1.00 0.70</size></box></geometry>
+          <material><ambient>0.60 0.42 0.24 1</ambient><diffuse>0.60 0.42 0.24 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="table_south_1">
+      <static>true</static>
+      <pose>1.5 -2.2 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.60 1.00 0.70</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.60 1.00 0.70</size></box></geometry>
+          <material><ambient>0.60 0.42 0.24 1</ambient><diffuse>0.60 0.42 0.24 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="table_south_2">
+      <static>true</static>
+      <pose>4.2 -2.2 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.60 1.00 0.70</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.60 1.00 0.70</size></box></geometry>
+          <material><ambient>0.60 0.42 0.24 1</ambient><diffuse>0.60 0.42 0.24 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- Dispersed Chairs -->
+    <model name="chair_1">
+      <static>true</static>
+      <pose>1.2 -1.0 0.225 0 0 0.3</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.40 0.40 0.45</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.40 0.40 0.45</size></box></geometry>
+          <material><ambient>0.25 0.35 0.55 1</ambient><diffuse>0.25 0.35 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="chair_2">
+      <static>true</static>
+      <pose>3.0 1.2 0.225 0 0 -0.4</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.40 0.40 0.45</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.40 0.40 0.45</size></box></geometry>
+          <material><ambient>0.25 0.35 0.55 1</ambient><diffuse>0.25 0.35 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

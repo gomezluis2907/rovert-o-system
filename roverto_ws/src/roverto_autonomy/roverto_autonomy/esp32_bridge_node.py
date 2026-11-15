@@ -8,7 +8,7 @@ from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from std_msgs.msg import ByteMultiArray, UInt8
+from std_msgs.msg import ByteMultiArray, Float32, UInt8
 from tf2_ros import TransformBroadcaster
 
 from roverto_autonomy.calibration import load_calibration
@@ -90,21 +90,26 @@ class Esp32BridgeNode(Node):
         self.max_ticks = self.declare_parameter(
             'max_ticks_per_cycle', int(cal['max_ticks_per_cycle'])).value
         self.mock = self.declare_parameter('mock_serial', False).value
-        self.publish_tf = self.declare_parameter('publish_tf', True).value
+        # Disabled by default because laser_odom_node publishes /odom and odom -> base_footprint TF
+        self.publish_odom = self.declare_parameter('publish_odom', False).value
+        self.publish_tf = self.declare_parameter('publish_tf', False).value
 
         self.odom_calc = DiffDriveOdometry(self.tpm, self.sep)
         self.parser = Packet1Parser()
         self.prev_ticks = None
         self.last_stamp = None
         self.obstacle_state = 0
+        self.rover_status = None
         self.map_queue = deque(maxlen=4000)
         self.ser = None
         self._open_serial()
 
         self.odom_pub = self.create_publisher(Odometry, '/odom', 10)
         self.status_pub = self.create_publisher(UInt8, '/rover_status', 10)
+        self.cmd_pub = self.create_publisher(Float32, '/gs_command', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
         self.create_subscription(UInt8, '/obstacle_state', self.on_obstacle, 10)
+        self.create_subscription(UInt8, '/rover_status', self.on_rover_status, 10)
         self.create_subscription(
             ByteMultiArray, '/compressed_map_chunk', self.on_chunk,
             QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE))
@@ -160,6 +165,10 @@ class Esp32BridgeNode(Node):
             return
         for left, right, status in self.parser.feed(data):
             self.handle_packet1(left, right, status)
+        for cmd_id, dist in self.parser.pop_commands():
+            # Forward Ground Station command (1=ADVANCE dist, 0=STOP -> 0.0) to Pi mission tracker
+            target = float(dist) if cmd_id == 1 else 0.0
+            self.cmd_pub.publish(Float32(data=target))
 
     def handle_packet1(self, left: int, right: int, status: int):
         now = self.get_clock().now()
@@ -202,7 +211,8 @@ class Esp32BridgeNode(Node):
         tcov = list(cov)
         tcov[0], tcov[7], tcov[35] = 0.01, 0.01, 0.03
         odom.twist.covariance = tcov
-        self.odom_pub.publish(odom)
+        if self.publish_odom:
+            self.odom_pub.publish(odom)
         if self.publish_tf:
             t = TransformStamped()
             t.header.stamp = stamp
@@ -215,14 +225,28 @@ class Esp32BridgeNode(Node):
             self.tf_broadcaster.sendTransform(t)
 
     # ---- ROS -> ESP32 ------------------------------------------------------------------
+    def _effective_drive_state(self) -> int:
+        """Send STOP (3) to ESP32 when Pi mission tracker is in STANDBY (0) or GOAL_REACHED (3)."""
+        if self.rover_status in (0, 3):
+            return 3
+        return self.obstacle_state
+
+    def on_rover_status(self, msg: UInt8):
+        prev = self._effective_drive_state()
+        self.rover_status = msg.data
+        curr = self._effective_drive_state()
+        if curr != prev:
+            self._write(pack_packet2(curr))
+
     def on_obstacle(self, msg: UInt8):
-        changed = msg.data != self.obstacle_state
+        prev = self._effective_drive_state()
         self.obstacle_state = msg.data
-        if changed:
-            self._write(pack_packet2(self.obstacle_state))
+        curr = self._effective_drive_state()
+        if curr != prev:
+            self._write(pack_packet2(curr))
 
     def on_keepalive(self):
-        self._write(pack_packet2(self.obstacle_state))
+        self._write(pack_packet2(self._effective_drive_state()))
 
     def on_chunk(self, msg: ByteMultiArray):
         frame = msg_data_to_bytes(msg.data)

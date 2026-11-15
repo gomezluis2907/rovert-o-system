@@ -23,6 +23,7 @@ setup(
             'sim_esp32_emulator_node = roverto_autonomy.sim_esp32_emulator_node:main',
             'map_compressor_node = roverto_autonomy.map_compressor_node:main',
             'esp32_bridge_node = roverto_autonomy.esp32_bridge_node:main',
+            'laser_odom_node = roverto_autonomy.laser_odom_node:main',
         ],
     },
 )

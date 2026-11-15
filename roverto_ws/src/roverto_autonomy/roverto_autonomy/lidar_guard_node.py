@@ -18,6 +18,7 @@ LEFT_ASSESS = (15.0 * DEG, 80.0 * DEG)
 RIGHT_ASSESS = (-80.0 * DEG, -15.0 * DEG)
 LEFT_FLANK = (35.0 * DEG, 105.0 * DEG)
 RIGHT_FLANK = (-105.0 * DEG, -35.0 * DEG)
+REAR_CROP = 135.0 * DEG  # Ignore rear rays (>135 deg) obstructed by the chassis behind the shelf
 
 
 def sector_ranges(angles, ranges, sector):
@@ -64,7 +65,8 @@ class LidarGuardNode(Node):
         raw = msg.angle_min + np.arange(n) * msg.angle_increment
         angles = np.arctan2(np.sin(raw), np.cos(raw))  # [-pi, pi], 0 = +X, + = left
         ranges = np.asarray(msg.ranges, dtype=np.float64)
-        valid = np.isfinite(ranges) & (ranges >= msg.range_min) & (ranges <= msg.range_max)
+        valid = (np.isfinite(ranges) & (ranges >= max(msg.range_min, 0.12))
+                 & (ranges <= msg.range_max) & (np.abs(angles) <= REAR_CROP))
         angles, ranges = angles[valid], ranges[valid]
 
         front_min = self._min(sector_ranges(angles, ranges, FRONT))

@@ -1,9 +1,10 @@
 """Compress /map into Packet 3 chunks (crop + 2-bit quantisation + zlib) for ESP-NOW telemetry."""
+import math
 import struct
 import zlib
 
 import numpy as np
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -63,15 +64,19 @@ class MapCompressorNode(Node):
 
     def __init__(self):
         super().__init__('map_compressor_node')
-        self.period = self.declare_parameter('periodic_sec', 10.0).value
-        # slam_toolbox rebuilds /map every 2 s; wait a little longer so the goal map is complete.
-        self.goal_delay = self.declare_parameter('goal_map_delay_sec', 2.5).value
+        # SRS: send map fragments every 0.5 m of travel, bounded to <= 0.08 Hz (min 12.5 s interval)
+        self.dist_trigger = self.declare_parameter('distance_trigger_m', 0.5).value
+        self.min_interval = self.declare_parameter('min_interval_sec', 12.5).value
+        self.period = self.declare_parameter('periodic_sec', 12.5).value
+        # slam_toolbox rebuilds /map every 3 s; wait a little longer so the goal map is complete.
+        self.goal_delay = self.declare_parameter('goal_map_delay_sec', 3.2).value
 
         map_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              reliability=ReliabilityPolicy.RELIABLE)
         chunk_qos = QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE)
         self.pub = self.create_publisher(ByteMultiArray, '/compressed_map_chunk', chunk_qos)
         self.create_subscription(OccupancyGrid, '/map', self.on_map, map_qos)
+        self.create_subscription(Odometry, '/odom', self.on_odom, 10)
         self.create_subscription(UInt8, '/rover_status', self.on_status, 10)
         self.create_timer(self.period, self.on_periodic)
 
@@ -80,6 +85,23 @@ class MapCompressorNode(Node):
         self.seq = 0
         self.prev_status = None
         self._goal_timer = None
+        self.prev_xy = None
+        self.travel_dist = 0.0
+        self.last_send_sec = None
+
+    def _now_sec(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _rate_allowed(self) -> bool:
+        return self.last_send_sec is None or (self._now_sec() - self.last_send_sec) >= self.min_interval
+
+    def on_odom(self, msg: Odometry):
+        x, y = msg.pose.pose.position.x, msg.pose.pose.position.y
+        if self.prev_xy is not None:
+            self.travel_dist += math.hypot(x - self.prev_xy[0], y - self.prev_xy[1])
+        self.prev_xy = (x, y)
+        if self.dirty and self.travel_dist >= self.dist_trigger and self._rate_allowed():
+            self.send_map('distance')
 
     def on_map(self, msg: OccupancyGrid):
         if self.latest is None or list(msg.data) != list(self.latest.data) \
@@ -103,8 +125,9 @@ class MapCompressorNode(Node):
         self.send_map('goal')
 
     def on_periodic(self):
-        if self.dirty:
-            self.send_map('periodic')
+        # Fallback check if 0.5 m travel was reached while waiting for the 12.5 s rate guard
+        if self.dirty and self.travel_dist >= self.dist_trigger and self._rate_allowed():
+            self.send_map('distance')
 
     def send_map(self, reason: str):
         if self.latest is None:
@@ -130,6 +153,8 @@ class MapCompressorNode(Node):
             f'(ratio {len(raw) / len(comp):.1f}:1), {len(frames)} chunks')
         self.seq = (self.seq + 1) & 0xFF
         self.dirty = False
+        self.travel_dist = 0.0
+        self.last_send_sec = self._now_sec()
 
 
 def main(args=None):

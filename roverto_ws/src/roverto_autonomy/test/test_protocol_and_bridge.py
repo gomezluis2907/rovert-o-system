@@ -7,13 +7,14 @@ import numpy as np
 import pytest
 import rclpy
 from nav_msgs.msg import Odometry
-from std_msgs.msg import ByteMultiArray, UInt8
+from std_msgs.msg import ByteMultiArray, Float32, UInt8
 
 from roverto_autonomy.esp32_bridge_node import Esp32BridgeNode
+from roverto_autonomy.laser_odom_node import icp_2d
 from roverto_autonomy.map_compressor_node import compress_grid, frame_chunks
 from roverto_autonomy.protocol import (
-    bytes_to_msg_data, pack_packet1, pack_packet2, pack_packet3, Packet1Parser,
-    unpack_packet3, xor_checksum)
+    bytes_to_msg_data, pack_packet1, pack_packet2, pack_packet3, pack_packet4,
+    Packet1Parser, unpack_packet3, unpack_packet4, xor_checksum)
 
 GS = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..',
                                   'ground_station_gui'))
@@ -27,9 +28,13 @@ def test_packet1_roundtrip_and_resync():
     assert len(good) == 12
     bad = bytearray(pack_packet1(1, 2, 1))
     bad[-1] ^= 0xFF
-    out = p.feed(b'\x00\x13' + bytes(bad) + b'\xAA' + good[:5])
+    cmd = pack_packet4(1, 5.0)
+    assert unpack_packet4(cmd) == (1, pytest.approx(5.0))
+    # Unknown packet ID (0xAA 0x99) from Electronics is ignored without breaking sync
+    out = p.feed(b'\x00\x13\xAA\x99\x01\x02' + bytes(bad) + cmd + b'\xAA' + good[:5])
     out += p.feed(good[5:])
     assert out == [(-1234, 5678, 2)]
+    assert p.pop_commands() == [(1, pytest.approx(5.0))]
     assert p.bad_checksums == 1
 
 
@@ -103,12 +108,30 @@ def _spin(node, secs):
         rclpy.spin_once(node, timeout_sec=0.01)
 
 
+def test_icp_2d_scan_matching():
+    # Generate an L-shaped wall corner in the rover's front field of view
+    xs = np.linspace(0.5, 2.5, 40)
+    wall_a = np.column_stack([xs, np.ones_like(xs) * 1.5])
+    wall_b = np.column_stack([np.ones_like(xs) * 2.5, np.linspace(-1.0, 1.5, 40)])
+    prev_pts = np.vstack([wall_a, wall_b])
+    # Rover advances +0.04 m in X and rotates +0.03 rad (points shift oppositely in body frame)
+    true_dx, true_dy, true_dyaw = 0.04, -0.01, 0.03
+    c, s = np.cos(true_dyaw), np.sin(true_dyaw)
+    rot_inv = np.array([[c, s], [-s, c]])
+    curr_pts = (prev_pts - np.array([true_dx, true_dy])) @ rot_inv.T
+    dx, dy, dyaw = icp_2d(curr_pts, prev_pts)
+    assert dx == pytest.approx(true_dx, abs=2e-3)
+    assert dy == pytest.approx(true_dy, abs=2e-3)
+    assert dyaw == pytest.approx(true_dyaw, abs=2e-3)
+
+
 def test_bridge_mock_loopback(ros):
     node = Esp32BridgeNode(parameter_overrides=[
         rclpy.parameter.Parameter('mock_serial', value=True)])
-    odoms = []
+    odoms, gs_cmds = [], []
     helper = rclpy.create_node('bridge_test_helper')
     helper.create_subscription(Odometry, '/odom', lambda m: odoms.append(m), 10)
+    helper.create_subscription(Float32, '/gs_command', lambda m: gs_cmds.append(m.data), 10)
     obs_pub = helper.create_publisher(UInt8, '/obstacle_state', 10)
     chunk_pub = helper.create_publisher(ByteMultiArray, '/compressed_map_chunk', 100)
     ser = node.ser
@@ -116,6 +139,7 @@ def test_bridge_mock_loopback(ros):
 
     ser.inject(pack_packet1(0, 0, 0))
     ser.inject(pack_packet1(int(0.5 * tpm), int(0.5 * tpm), 1))   # 0.5 m straight
+    ser.inject(pack_packet4(1, 3.5))                              # Advance 3.5 m command
     _spin(node, 0.1)
     ser.inject(pack_packet1(int(0.5 * tpm) + 100000, int(0.5 * tpm), 1))  # jump -> clamp
     ser.inject(pack_packet1(int(1.0 * tpm), int(1.0 * tpm), 1))  # jump too (relative to jump)
@@ -124,6 +148,8 @@ def test_bridge_mock_loopback(ros):
         rclpy.spin_once(helper, timeout_sec=0.0)
     assert node.odom_calc.x == pytest.approx(0.5, abs=1e-3)       # jumps ignored
     assert node.odom_calc.y == pytest.approx(0.0, abs=1e-6)
+    assert len(odoms) == 0                                        # publish_odom defaults False
+    assert gs_cmds == [pytest.approx(3.5)]                        # Packet 4 forwarded to /gs_command
 
     obs_pub.publish(UInt8(data=3))
     for i in range(4):

@@ -6,13 +6,16 @@
     <!-- Run Gazebo server-only with headless rendering (no GUI), e.g. for CI/automated tests -->
     <arg name="headless" default="false" description="Run Gazebo without GUI (-s --headless-rendering)"/>
 
+    <!-- Simulation world file inside roverto_gazebo/worlds (classroom.sdf or tunnel.sdf) -->
+    <arg name="world" default="classroom.sdf" description="World filename in roverto_gazebo/worlds"/>
+
     <!-- URDF xacro path -->
     <let name="urdf_path"
          value="$(find-pkg-share roverto_description)/urdf/roverto.urdf.xacro" />
 
     <!-- World path -->
     <let name="sdf_path"
-         value="$(find-pkg-share roverto_gazebo)/worlds/tunnel.sdf" />
+         value="$(find-pkg-share roverto_gazebo)/worlds/$(var world)" />
 
     <!-- Gazebo bridge config path -->
     <let name="gazebo_config_path"

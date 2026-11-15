@@ -16,7 +16,7 @@ slip_factor: 1.0            # skid-steer: commanded_yaw / actual_yaw from a 360 
 wheel_separation: 0.227     # m, EFFECTIVE track = 2 * wheel_y_offset * slip_factor (keep in sync when changing either)
 
 # Exact [X, Y, Z] mounting position of the LiDAR relative to base_link
-lidar_xyz: [0.0, 0.0, 0.11675]   # base_link -> laser_frame
+lidar_xyz: [0.125, 0.0, 0.08]    # base_link -> laser_frame (centered on front shelf ahead of X=+0.10 m chassis face)
 
 # Rotation of the LiDAR [Roll, Pitch, Yaw]
 lidar_rpy: [0.0, 0.0, 0.0]
