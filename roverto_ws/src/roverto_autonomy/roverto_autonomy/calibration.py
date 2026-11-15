@@ -1,4 +1,9 @@
 """Loader for the shared rover_calibration.yaml (single source of physical constants)."""
+
+# It finds rover_calibration.yaml in roverto_description and loads it into a Python dictionary so 
+# lidar_guard_node, esp32_bridge_node, and sim_esp32_emulator_node all share the exact same 
+# measurements.
+
 import os
 
 from ament_index_python.packages import get_package_share_directory

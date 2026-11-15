@@ -4,19 +4,46 @@
 
 # ---- Kinematics & URDF ------------------------------------------------------
 wheel_radius: 0.0325        # m. Baseline from the existing URDF (NOTE: spec text said 0.05; measure the real wheel)
+# The distance from the center spine of the rover out to the center of a left or right wheel
+# The sideways distance from the center line of the rover to the center of a wheel (0.1135 m)
 wheel_y_offset: 0.1135      # m, wheel center to chassis centerline
+
+# A correction multiplier (1.0 for now) that adjusts the turning math to account for tires sliding 
+# sideways on the floor during a turn.
 slip_factor: 1.0            # skid-steer: commanded_yaw / actual_yaw from a 360 deg in-place test (typ. 1.2-1.8)
+
+# The total effective width between the left wheels and right wheels
 wheel_separation: 0.227     # m, EFFECTIVE track = 2 * wheel_y_offset * slip_factor (keep in sync when changing either)
 
+# Exact [X, Y, Z] mounting position of the LiDAR relative to base_link
 lidar_xyz: [0.0, 0.0, 0.11675]   # base_link -> laser_frame
+
+# Rotation of the LiDAR [Roll, Pitch, Yaw]
 lidar_rpy: [0.0, 0.0, 0.0]
 
 # ---- Odometry & hardware ----------------------------------------------------
+
+# How many electrical pulses ("ticks") a wheel encoder sends to the ESP32 when the rover 
+# rolls forward 1 full meter.
 ticks_per_meter: 1000.0     # placeholder until encoder calibration
+
+# A "bullshit detector" (sanity clamp) in esp32_bridge_node
 max_ticks_per_cycle: 500    # sanity clamp: reject per-packet tick deltas larger than this
 
 # ---- Safety guard -----------------------------------------------------------
+
+# If any laser beam inside the front cone (-30° to +30°) sees an object closer than 45 cm, 
+# the rover treats the path ahead as blocked and starts turning (AVOID_LEFT or AVOID_RIGHT)
 front_stop_distance: 0.45   # m
 flank_safe_distance: 0.30   # m
+
+# Forward driving speed
 linear_speed: 0.04          # m/s (SRS cap: 4 cm/s)
+
+# Turning speed
 angular_speed: 0.50         # rad/s
+
+# base_footprint is the robot's "anchor point in the ground"
+# Rover's shadow on the floor directly underneath its belly
+
+# base_link is the bottom-center of the chassis box
