@@ -20,4 +20,8 @@ roverto_ws/log/
 __pycache__/
 *.py[cod]
 venv/
+.venv/
 .env
+
+# Lecturas grabadas desde la GUI
+ground_station_gui/lecturas/

@@ -9,11 +9,33 @@ class App(ctk.CTk):
         # inicializacion de la aplicacion
         super().__init__(fg_color=c.white[0])
         self.title(title)
-        self.geometry(f"{size[0]}x{size[1]}")
-        self.resizable(False, False)
-        
+
+        # tamano "restaurado": el pedido, pero sin exceder el 85% de la pantalla actual
+        scale = ctk.ScalingTracker.get_window_scaling(self)
+        screen_w = int(self.winfo_screenwidth() / scale)
+        screen_h = int(self.winfo_screenheight() / scale)
+        width = min(size[0], int(screen_w * 0.85))
+        height = min(size[1], int(screen_h * 0.85))
+        self.geometry(f"{width}x{height}+{(screen_w - width) // 2}+{(screen_h - height) // 2}")
+        self.minsize(min(960, width), min(600, height))
+        self.resizable(True, True)
+
+        # arranca maximizada para ocupar la pantalla en la que se abra
+        # (con retraso: customtkinter reacomoda la ventana al iniciar y anularia el maximizado)
+        self.after(300, self._maximize)
+
+
         self.view = self.View(master=self)
         self.view.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    def _maximize(self):
+        try:
+            self.state("zoomed")  # Windows / macOS
+        except Exception:
+            try:
+                self.attributes("-zoomed", True)  # Linux (X11)
+            except Exception:
+                pass
 
     class View(ctk.CTkTabview):
         # parametros de la clase
@@ -31,5 +53,5 @@ class App(ctk.CTk):
             self.parameters.place(relx=0.05, rely=0.05, relwidth=0.9, relheight=0.85)
             
             # agregado de seccion (frame) de graficas
-            self.graphics = g.Graphics(master=self.tab("Gráficas"))
-            self.graphics.place(relx=0.05, rely=0.05, relwidth=0.9, relheight=0.85)
+            self.graphics = g.Graphics(master=self.tab("Gráficas"), parameters=self.parameters)
+            self.graphics.place(relx=0, rely=0, relwidth=1, relheight=1)  # el dashboard ocupa toda la pestaña
