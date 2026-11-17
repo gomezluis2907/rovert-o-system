@@ -4,7 +4,30 @@ Este documento define los mensajes entre la Estación Terrena, la ESP32-Onboard 
 
 ---
 
-## 1. Reglas del enlace
+## 1. Estructura básica de un paquete
+
+Cada paquete viaja como una fila continua de bytes y usa cuatro campos fijos para evitar errores.
+
+| Campo | Qué es | Para qué sirve | Ejemplo |
+|---|---|---|---|
+| `sync` (`0xAA`) | Marca de inicio | Este byte señala dónde arranca un paquete nuevo. | El receptor ignora la basura previa hasta encontrar `0xAA`. |
+| `id` (`0x01`–`0x06`) | Etiqueta de tipo | Este byte indica qué clase de datos vienen después. | El valor `0x01` avisa que el mensaje trae un `COMMAND`. |
+| `seq` (`0..255`) | Número de folio | Este byte cuenta los envíos en orden para detectar pérdidas o duplicados. | El salto de `seq=4` a `seq=6` muestra que el paquete `5` se perdió. |
+| `xor` (`1 B`) | Sello contra errores | Este byte comprueba que ningún dato llegó dañado por ruido. | El receptor repite la operación `XOR` y descarta la trama si no coincide. |
+
+**Ejemplo de un paquete `COMMAND` (avanzar `2.0 m` sin girar):**
+
+La Estación Terrena envía estos `13` bytes seguidos: `AA 01 04 01 00 00 00 40 00 00 00 00 EE`.
+
+* El byte `AA` (`sync`) marca el inicio del mensaje.
+* El byte `01` (`id`) identifica el paquete como `COMMAND`.
+* El byte `04` (`seq`) indica que este envío es el mensaje número `4`.
+* Los bytes `01 00 00 00 40 00 00 00 00` representan la orden `AVANZAR`, `2.0 m` y `0.0°`.
+* El byte `EE` (`xor`) guarda el cálculo `XOR` de los `12` bytes anteriores para validar la trama.
+
+---
+
+## 2. Reglas del enlace
 
 * **Orden de bytes:** Todos los campos numéricos usan formato Little-Endian (`<`) y estructuras empaquetadas sin relleno.
 * **Formato general:** Cada paquete inicia con `0xAA`, sigue con el `ID` de un byte, continúa con los datos y termina con un byte `XOR`.
@@ -16,7 +39,7 @@ Este documento define los mensajes entre la Estación Terrena, la ESP32-Onboard 
 
 ---
 
-## 2. Tabla general de mensajes (ESP-NOW y USB)
+## 3. Tabla general de mensajes (ESP-NOW y USB)
 
 | ID | Mensaje | Dirección | Sensores / Origen | Frecuencia | Tamaño total | Ancho de banda |
 |---|---|---|---|---|---|---|
@@ -31,7 +54,7 @@ El tráfico total promedio suma `~4.38 kbps` de bajada y `≤ 0.11 kbps` de subi
 
 ---
 
-## 3. Detalle de cada mensaje
+## 4. Detalle de cada mensaje
 
 ### `0x01` — COMMAND (`13 B`, `<BBBBffB`)
 La Estación Terrena envía órdenes de misión y movimiento al rover.
@@ -165,9 +188,9 @@ El bloque descomprimido comienza con `10` bytes (`width`, `height`, `resolution_
 
 ---
 
-## 4. Puente interno UART (Raspberry Pi ↔ ESP32-Onboard)
+## 5. Puente interno UART (Raspberry Pi ↔ ESP32-Onboard)
 
-La conexión serie opera a `115200` baudios y reutiliza los paquetes anteriores más dos tramas internas:
+La conexión serie opera a `115200` baudios y reutiliza los paquetes anteriores más tres tramas internas:
 
 * **Tramas pasantes:** La ESP32-Onboard reenvía `0x01 COMMAND` hacia la Raspberry Pi y reenvía `0x06 MAP` hacia la ESP32-GS sin alterar su contenido.
 * **Trama `0x66` (`DRIVE_STATE`, Pi → ESP32, `4 B`):** La Raspberry Pi envía `<BBBB` (`0xAA`, `0x66`, `obstacle_state`, `xor`) para indicar evasión, giro o paro al `Drivetrain`.
