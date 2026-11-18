@@ -52,6 +52,7 @@ static uint8_t  map_q_buf[MAP_QUEUE_SLOTS][P3_MAX_FRAME];
 static uint8_t  map_q_len[MAP_QUEUE_SLOTS];
 static volatile size_t map_q_head = 0, map_q_tail = 0;
 static volatile uint32_t last_hp_tx_ms = 0;
+static volatile uint32_t radio_fail_start_ms = 0;  // 0 = enlace ESP-NOW sano; >0 = inicio de fallos de ACK
 
 static uint8_t xor8(const uint8_t *d, size_t n) {
     uint8_t x = 0;
@@ -84,8 +85,9 @@ static void enqueue_map_chunk(const uint8_t *frame, size_t len) {
 // Envía 0x01 COMMAND (13 B, <BBBBffB) hacia la Raspberry Pi con deduplicación por seq
 void bridge_send_command_to_pi(uint8_t seq, uint8_t cmd_id, float distance_m, float angle_deg) {
     static int16_t last_seq = -1;
-    bridge_last_gs_ms = millis();
-    bridge_link_lost  = false;
+    bridge_last_gs_ms   = millis();
+    radio_fail_start_ms = 0;
+    bridge_link_lost    = false;
     if ((int16_t)seq == last_seq) return;
     last_seq = (int16_t)seq;
 
@@ -107,6 +109,24 @@ void bridge_send_command_to_pi(uint8_t seq, uint8_t cmd_id, float distance_m, fl
 void bridge_send_gs_command(uint8_t cmd_id, float distance_m) {
     static uint8_t auto_seq = 0;
     bridge_send_command_to_pi(auto_seq++, cmd_id, distance_m, 0.0f);
+}
+
+// Reporta el estado de ACK de transmisión ESP-NOW (llamar desde OnDataSent en Telecom)
+void bridge_notify_radio_tx_status(bool ack_ok) {
+    uint32_t now = millis();
+    if (ack_ok) {
+        bridge_last_gs_ms   = now;
+        radio_fail_start_ms = 0;
+        bridge_link_lost    = false;
+    } else {
+        if (radio_fail_start_ms == 0) {
+            radio_fail_start_ms = (now != 0) ? now : 1;
+        }
+        if ((uint32_t)(now - radio_fail_start_ms) > LINK_TIMEOUT_MS) {
+            bridge_link_lost      = true;
+            bridge_obstacle_state = 3;
+        }
+    }
 }
 
 // Punto de entrada para Telecom cuando llega una trama por ESP-NOW desde ESP32-GS
@@ -286,8 +306,8 @@ static void bridge_task(void *) {
         }
 
         uint32_t now = millis();
-        // Watchdog de enlace (> 2 s sin comandos/heartbeat de GS tras haber iniciado enlace)
-        if (bridge_last_gs_ms != 0 && (uint32_t)(now - bridge_last_gs_ms) > LINK_TIMEOUT_MS) {
+        // Watchdog de enlace: solo se dispara si hay fallos continuos de radio durante > 2 s
+        if (radio_fail_start_ms != 0 && (uint32_t)(now - radio_fail_start_ms) > LINK_TIMEOUT_MS) {
             bridge_link_lost      = true;
             bridge_obstacle_state = 3;  // forzar STOP (STANDBY seguro)
         }

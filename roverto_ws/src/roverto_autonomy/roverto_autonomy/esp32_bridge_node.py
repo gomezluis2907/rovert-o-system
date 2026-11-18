@@ -151,6 +151,7 @@ class Esp32BridgeNode(Node):
         self.rover_status = None
         self.cmd_linear_x = 0.0
         self.cmd_angular_z = 0.0
+        self._realign_dir = 0
         self.pi_velocity_mps = 0.0
         self.cpu_temp_c = _read_cpu_temp_c()
         self.cpu_pct = 0
@@ -311,16 +312,30 @@ class Esp32BridgeNode(Node):
             self._write(pack_packet2(curr))
 
     def _effective_drive_state(self) -> int:
-        """Send STOP (3) when STANDBY (0) or GOAL_REACHED (3); forward in-place turn (1/2)
-        when mission tracker rotates for angle_deg while path is CLEAR."""
+        """Send STOP (3) when STANDBY (0) or GOAL_REACHED (3); forward turn state (1/2)
+        for in-place angle_deg turns and post-obstacle heading realignment while CLEAR."""
         if self.rover_status in (0, 3):
+            self._realign_dir = 0
             return 3
-        if self.obstacle_state == 0 and abs(self.cmd_linear_x) < 1e-4:
+        if self.obstacle_state != 0:
+            self._realign_dir = 0
+            return self.obstacle_state
+        if abs(self.cmd_linear_x) < 1e-4:
+            self._realign_dir = 0
             if self.cmd_angular_z > 0.05:
                 return 1  # turn left (CCW)
             if self.cmd_angular_z < -0.05:
                 return 2  # turn right (CW)
-        return self.obstacle_state
+            return 0
+        # Post-obstacle heading realignment with hysteresis (enter >= ~7.6 deg, exit <= ~2.3 deg)
+        if self._realign_dir == 0:
+            if self.cmd_angular_z >= 0.20:
+                self._realign_dir = 1
+            elif self.cmd_angular_z <= -0.20:
+                self._realign_dir = 2
+        elif abs(self.cmd_angular_z) <= 0.06:
+            self._realign_dir = 0
+        return self._realign_dir if self._realign_dir != 0 else 0
 
     def on_rover_status(self, msg: UInt8):
         prev = self._effective_drive_state()

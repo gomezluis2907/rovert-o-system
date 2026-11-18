@@ -207,3 +207,21 @@ def test_mission_turn_and_commands():
     assert node.status == GOAL_REACHED
     node.destroy_node()
 
+
+def test_bridge_realignment_hysteresis(ros):
+    node = Esp32BridgeNode(parameter_overrides=[
+        rclpy.parameter.Parameter('mock_serial', value=True)])
+    node.rover_status = 1     # EXECUTING
+    node.obstacle_state = 0   # CLEAR
+    node.cmd_linear_x = 0.04  # advancing after passing obstacle
+    # Deflected left -> sim_esp32_emulator_node commands negative angular.z (-0.35 rad/s) to realign right
+    node.cmd_angular_z = -0.35
+    assert node._effective_drive_state() == 2  # AVOID_RIGHT turn sent to ESP32
+    # Still turning until error drops to <= 0.06 rad/s
+    node.cmd_angular_z = -0.10
+    assert node._effective_drive_state() == 2
+    node.cmd_angular_z = -0.04
+    assert node._effective_drive_state() == 0  # back to straight forward (CLEAR)
+    node.destroy_node()
+
+
