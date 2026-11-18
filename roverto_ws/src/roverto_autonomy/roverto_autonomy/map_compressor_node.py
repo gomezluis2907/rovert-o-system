@@ -1,4 +1,4 @@
-"""Compress /map into Packet 3 chunks (crop + 2-bit quantisation + zlib) for ESP-NOW telemetry."""
+"""Compress /map into 0x06 MAP chunks (crop + 2-bit quantisation + zlib) for ESP-NOW telemetry."""
 import math
 import struct
 import zlib
@@ -8,9 +8,11 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import ByteMultiArray, UInt8
+from std_msgs.msg import ByteMultiArray, Float32MultiArray, UInt8
 
-from roverto_autonomy.protocol import bytes_to_msg_data, P3_MAX_PAYLOAD, pack_packet3
+from roverto_autonomy.protocol import (
+    bytes_to_msg_data, CMD_START_MISSION, CMD_STOP_MISSION,
+    P3_MAX_PAYLOAD, pack_packet3)
 
 GOAL_REACHED = 3
 META_FMT = '<HHHhh'  # width, height, resolution_mm, origin_x_cm, origin_y_cm (10 bytes)
@@ -51,7 +53,7 @@ def compress_grid(width, height, resolution, origin_x, origin_y, data):
 
 
 def frame_chunks(compressed: bytes, seq: int):
-    """Slice into Packet 3 frames (<=198 B payload each). Returns list of frames or None."""
+    """Slice into 0x06 MAP frames (<=198 B payload each). Returns list of frames or None."""
     n = max(1, -(-len(compressed) // P3_MAX_PAYLOAD))
     if n > 255:
         return None
@@ -60,14 +62,15 @@ def frame_chunks(compressed: bytes, seq: int):
 
 
 class MapCompressorNode(Node):
-    """Publishes Packet 3 frames on /compressed_map_chunk."""
+    """Publishes 0x06 MAP frames on /compressed_map_chunk (see docs/ICD.md)."""
 
     def __init__(self):
         super().__init__('map_compressor_node')
-        # SRS: send map fragments every 0.5 m of travel, bounded to <= 0.08 Hz (min 12.5 s interval)
+        # SRS / ICD: send map fragments every 0.5 m of travel, bounded to <= 0.08 Hz (min 12.5 s)
         self.dist_trigger = self.declare_parameter('distance_trigger_m', 0.5).value
         self.min_interval = self.declare_parameter('min_interval_sec', 12.5).value
         self.period = self.declare_parameter('periodic_sec', 12.5).value
+        self.max_comp_bytes = self.declare_parameter('max_compressed_bytes', 1950).value
         # slam_toolbox rebuilds /map every 3 s; wait a little longer so the goal map is complete.
         self.goal_delay = self.declare_parameter('goal_map_delay_sec', 3.2).value
 
@@ -78,6 +81,7 @@ class MapCompressorNode(Node):
         self.create_subscription(OccupancyGrid, '/map', self.on_map, map_qos)
         self.create_subscription(Odometry, '/odom', self.on_odom, 10)
         self.create_subscription(UInt8, '/rover_status', self.on_status, 10)
+        self.create_subscription(Float32MultiArray, '/mission_command', self.on_mission_cmd, 10)
         self.create_timer(self.period, self.on_periodic)
 
         self.latest = None
@@ -94,6 +98,23 @@ class MapCompressorNode(Node):
 
     def _rate_allowed(self) -> bool:
         return self.last_send_sec is None or (self._now_sec() - self.last_send_sec) >= self.min_interval
+
+    def on_mission_cmd(self, msg: Float32MultiArray):
+        if len(msg.data) < 1:
+            return
+        cmd_id = int(round(msg.data[0]))
+        if cmd_id == CMD_START_MISSION:
+            if self._goal_timer is not None:
+                self._goal_timer.cancel()
+                self._goal_timer = None
+            self.seq = 0
+            self.travel_dist = 0.0
+            self.prev_xy = None
+            self.last_send_sec = None
+            self.dirty = self.latest is not None
+            self.get_logger().info('INICIAR MISION: map sequence and travel counter reset')
+        elif cmd_id == CMD_STOP_MISSION:
+            self.send_map('stop_mission')
 
     def on_odom(self, msg: Odometry):
         x, y = msg.pose.pose.position.x, msg.pose.pose.position.y
@@ -140,6 +161,9 @@ class MapCompressorNode(Node):
             self.get_logger().warn('Map has no known cells; skipping')
             return
         raw, comp = result
+        if len(comp) > self.max_comp_bytes:
+            self.get_logger().warn(
+                f'Compressed map ({len(comp)} B) exceeds RV-SW-03 nominal budget ({self.max_comp_bytes} B)')
         frames = frame_chunks(comp, self.seq)
         if frames is None:
             self.get_logger().error(f'Compressed map {len(comp)} B needs >255 chunks; skipped')

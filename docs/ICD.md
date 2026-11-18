@@ -47,10 +47,10 @@ La Estación Terrena envía estos `13` bytes seguidos: `AA 01 04 01 00 00 00 40 
 | `0x02` | **NAV** | Rover → Estación | BNO085 + `/odom` Pi | `10 Hz` | `36 B` | `2.88 kbps` |
 | `0x03` | **POWER** | Rover → Estación | INA226 | `1 Hz` | `17 B` | `0.14 kbps` |
 | `0x04` | **THERMAL** | Rover → Estación | 3× DS18B20 | `0.1 Hz` (c/ `10 s`) | `21 B` | `0.02 kbps` |
-| `0x05` | **HEALTH** | Rover → Estación | RPi 4 + ESP32 | `0.5 Hz` (c/ `2 s`) | `13 B` | `0.05 kbps` |
+| `0x05` | **HEALTH** | Rover → Estación | RPi 4 + ESP32 | `0.5 Hz` (c/ `2 s`) | `15 B` | `0.06 kbps` |
 | `0x06` | **MAP** | Rover → Estación | `slam_toolbox` (Pi) | `≤ 0.08 Hz` (≥ `12.5 s`) | `8 a 205 B` (`≤ 242 B`) | `~1.29 kbps` |
 
-El tráfico total promedio suma `~4.38 kbps` de bajada y `≤ 0.11 kbps` de subida.
+El tráfico total promedio suma `~4.39 kbps` de bajada y `≤ 0.11 kbps` de subida.
 
 ---
 
@@ -144,7 +144,7 @@ La máscara `thermal_flags` usa seis bits (`1` = activo):
 
 ---
 
-### `0x05` — HEALTH (`13 B`, `<BBBIBBBBBB`)
+### `0x05` — HEALTH (`15 B`, `<BBBIBBBBHBB`)
 La ESP32-Onboard consolida el estado de la Raspberry Pi y de los sensores a `0.5 Hz`.
 
 | Campo | Tipo | Bytes | Descripción |
@@ -157,8 +157,9 @@ La ESP32-Onboard consolida el estado de la Raspberry Pi y de los sensores a `0.5
 | `obstacle_state` | `uint8` | `1` | Guardia LiDAR: `0=CLEAR`, `1=LEFT`, `2=RIGHT`, `3=STOP`, `4=HOLD_HEADING`. |
 | `rpi_cpu_temp_c` | `uint8` | `1` | Temperatura del procesador de la Raspberry Pi en `°C` (límite `75 °C`). |
 | `rpi_cpu_pct` | `uint8` | `1` | Carga de CPU de la Raspberry Pi en porcentaje (`0..100 %`; límite `70 %`). |
+| `rpi_ram_mb` | `uint16` | `2` | Memoria RAM usada en la Raspberry Pi en `MB` (límite `2800 MB`). |
 | `health_flags` | `uint8` | `1` | Máscara de bits de salud del sistema. |
-| `xor` | `uint8` | `1` | Suma `XOR` de los `12` bytes anteriores. |
+| `xor` | `uint8` | `1` | Suma `XOR` de los `14` bytes anteriores. |
 
 La máscara `health_flags` usa seis bits (`1` = normal / activo, excepto el bit 5):
 * **Bit 0 (`0x01`):** El enlace UART entre la Raspberry Pi y la ESP32-Onboard está activo.
@@ -194,5 +195,5 @@ La conexión serie opera a `115200` baudios y reutiliza los paquetes anteriores 
 
 * **Tramas pasantes:** La ESP32-Onboard reenvía `0x01 COMMAND` hacia la Raspberry Pi y reenvía `0x06 MAP` hacia la ESP32-GS sin alterar su contenido.
 * **Trama `0x66` (`DRIVE_STATE`, Pi → ESP32, `4 B`):** La Raspberry Pi envía `<BBBB` (`0xAA`, `0x66`, `obstacle_state`, `xor`) para indicar evasión, giro o paro al `Drivetrain`.
-* **Trama `0x90` (`PI_TELEMETRY`, Pi → ESP32, `10 B`):** La Raspberry Pi envía `<BBfBBBB` (`0xAA`, `0x90`, `velocity_mps`, `cpu_temp_c`, `cpu_pct`, `pi_flags`, `xor`) a `10 Hz` para alimentar los mensajes `0x02 NAV` y `0x05 HEALTH`.
+* **Trama `0x90` (`PI_TELEMETRY`, Pi → ESP32, `12 B`):** La Raspberry Pi envía `<BBfBBHBB` (`0xAA`, `0x90`, `velocity_mps`, `cpu_temp_c`, `cpu_pct`, `ram_mb`, `pi_flags`, `xor`) a `10 Hz` para alimentar los mensajes `0x02 NAV` y `0x05 HEALTH`.
 * **Trama `0x55` (`ENCODERS`, ESP32 → Pi, `12 B`):** La ESP32-Onboard envía `<BBiiBB` (`0xAA`, `0x55`, `left_ticks`, `right_ticks`, `rover_status`, `xor`) cuando existan encoders de rueda conectados.
