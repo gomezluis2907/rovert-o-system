@@ -235,15 +235,13 @@ class Esp32BridgeNode(Node):
         for left, right, status in self.parser.feed(data):
             self.handle_packet1(left, right, status)
         for cmd_id, dist, angle in self.parser.pop_commands():
+            if not (math.isfinite(dist) and math.isfinite(angle)):
+                self.get_logger().warn('Dropping 0x01 COMMAND with non-finite float payload')
+                continue
             # Publish full ICD 0x01 COMMAND [cmd_id, distance_m, angle_deg] on /mission_command
             mcmd = Float32MultiArray()
             mcmd.data = [float(cmd_id), float(dist), float(angle)]
             self.mission_cmd_pub.publish(mcmd)
-            # Also publish legacy /gs_command (Float32) when advancing or stopping
-            if cmd_id == CMD_MOVE and dist > 0.0:
-                self.cmd_pub.publish(Float32(data=float(dist)))
-            elif cmd_id != CMD_MOVE:
-                self.cmd_pub.publish(Float32(data=0.0))
 
     def handle_packet1(self, left: int, right: int, status: int):
         now = self.get_clock().now()

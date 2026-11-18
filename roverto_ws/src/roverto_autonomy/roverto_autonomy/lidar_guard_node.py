@@ -61,12 +61,24 @@ class LidarGuardNode(Node):
     def classify(self, msg: LaserScan) -> int:
         n = len(msg.ranges)
         if n == 0:
-            return CLEAR
+            self._avoid_dir = None
+            self._clear_since = None
+            return STOP
         raw = msg.angle_min + np.arange(n) * msg.angle_increment
         angles = np.arctan2(np.sin(raw), np.cos(raw))  # [-pi, pi], 0 = +X, + = left
         ranges = np.asarray(msg.ranges, dtype=np.float64)
-        valid = (np.isfinite(ranges) & (ranges >= max(msg.range_min, 0.12))
-                 & (ranges <= msg.range_max) & (np.abs(angles) <= REAR_CROP))
+        in_fov = np.abs(angles) <= REAR_CROP
+        in_front = (angles >= FRONT[0]) & (angles <= FRONT[1])
+        r_min = np.where(
+            in_front,
+            max(float(msg.range_min), 0.02),
+            max(float(msg.range_min), 0.12),
+        )
+        valid = np.isfinite(ranges) & (ranges >= r_min) & (ranges <= msg.range_max) & in_fov
+        if np.count_nonzero(valid) == 0 and not np.any(np.isposinf(ranges) & in_fov):
+            self._avoid_dir = None
+            self._clear_since = None
+            return STOP
         angles, ranges = angles[valid], ranges[valid]
 
         front_min = self._min(sector_ranges(angles, ranges, FRONT))

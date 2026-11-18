@@ -11,9 +11,10 @@ static constexpr uint32_t PI_UART_TIMEOUT_MS = 1000;
 static uint8_t current_state = ROVER_STANDBY;
 
 uint8_t rover_state_machine_step() {
+    uint32_t last_pi = bridge_last_pi_ms;
     uint32_t now = millis();
-    bool pi_timeout = (bridge_last_pi_ms == 0) ||
-                      ((uint32_t)(now - bridge_last_pi_ms) > PI_UART_TIMEOUT_MS);
+    bool pi_timeout = (last_pi == 0) ||
+                      ((int32_t)(now - last_pi) > (int32_t)PI_UART_TIMEOUT_MS);
 
     // Seguridad: detener si falla el enlace GS o el UART con la Raspberry Pi
     if (bridge_link_lost || pi_timeout) {

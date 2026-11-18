@@ -162,7 +162,7 @@ def test_bridge_mock_loopback(ros):
     assert node.odom_calc.x == pytest.approx(0.5, abs=1e-3)       # jumps ignored
     assert node.odom_calc.y == pytest.approx(0.0, abs=1e-6)
     assert len(odoms) == 0                                        # publish_odom defaults False
-    assert gs_cmds == [pytest.approx(3.5)]                        # 0x01 forwarded to /gs_command
+    assert gs_cmds == []                                          # no duplicate /gs_command emission (L3/New#1)
     assert mission_cmds == [[pytest.approx(1.0), pytest.approx(3.5), pytest.approx(30.0)]]
 
     obs_pub.publish(UInt8(data=3))
@@ -503,3 +503,110 @@ def test_c3_gui_staleness_and_link_loss():
     gui_main.check_telemetry_staleness(params, state, now=t0 + 30.1)
     assert params.rover_params.val_lidar_temp.get() == 'null'
     assert params.rover_params.val_bat_temp.get() == 'null'
+
+
+def test_m1_l3_float_validation_and_no_gs_cmd_clobber():
+    from roverto_autonomy.sim_esp32_emulator_node import (
+        EXECUTING, GOAL_REACHED, SimEsp32Emulator, STANDBY)
+    gui_dir = os.path.join(GS, 'GUI')
+    if gui_dir not in sys.path:
+        sys.path.insert(0, gui_dir)
+    from gs_serial_sender import GroundStationSerial
+
+    node = SimEsp32Emulator()
+    node.pose = (0.0, 0.0, 0.0)
+    node.last_odom_mono = node.last_obstacle_mono = time.monotonic()
+
+    # M1: inf/NaN/fuera de rango en _apply_command y on_mission_command no lanzan excepción ni inician giro infinito
+    for bad_d, bad_a in ((float('inf'), 0.0), (1.0, float('inf')), (1.0, float('nan')),
+                         (float('nan'), float('nan')), (-1.0, 0.0), (150.0, 0.0), (1.0, 500.0)):
+        node.on_mission_command(Float32MultiArray(data=[1.0, bad_d, bad_a]))
+        assert node.status == STANDBY
+
+    # L3: un mensaje tardío en /gs_command (> 50 ms) no pisa el ángulo de /mission_command
+    node.on_mission_command(Float32MultiArray(data=[1.0, 2.0, 45.0]))
+    assert node.status == EXECUTING and node.turning_to_heading is True
+    node._last_mission_cmd_mono = time.monotonic() - 0.5  # simular 500 ms de retraso
+    node.on_command(Float32(data=2.0))
+    assert node.turning_to_heading is True
+
+    # Hallazgo Nuevo #1: CMD_STOP_MISSION (3) no es pisado por un 0.0 tardío en /gs_command
+    node.on_mission_command(Float32MultiArray(data=[3.0, 0.0, 0.0]))
+    assert node.status == GOAL_REACHED
+    node._last_mission_cmd_mono = time.monotonic() - 0.5
+    node.on_command(Float32(data=0.0))
+    assert node.status == GOAL_REACHED
+    node.destroy_node()
+
+    # M1 en gs_serial_sender: rechaza inf, nan, negativos y overflow (1e40)
+    gs = GroundStationSerial(port='/dev/null_nonexistent')
+    assert gs.send_move(float('nan'), 10.0) is None
+    assert gs.send_move(1.0, float('inf')) is None
+    assert gs.send_move(1e40, 0.0) is None
+    with pytest.raises(ValueError):
+        gs._send(1, 1e40, 0.0)
+
+
+def test_m3_lidar_guard_fail_closed_and_close_front_obstacle(ros):
+    import math
+    from sensor_msgs.msg import LaserScan
+    from roverto_autonomy.lidar_guard_node import CLEAR, LidarGuardNode, STOP
+
+    guard = LidarGuardNode()
+
+    # 1. Scan vacío o todo NaN (fallo LD19 / lente tapado) -> debe fallar cerrado en STOP (3)
+    empty_scan = LaserScan()
+    assert guard.classify(empty_scan) == STOP
+
+    nan_scan = LaserScan()
+    nan_scan.angle_min = 0.0
+    nan_scan.angle_increment = 2.0 * math.pi / 360.0
+    nan_scan.range_min = 0.02
+    nan_scan.range_max = 12.0
+    nan_scan.ranges = [float('nan')] * 360
+    assert guard.classify(nan_scan) == STOP
+
+    # 2. Obstáculo frontal muy cercano (0.05 m < 0.12 m) con flancos bloqueados -> STOP (no CLEAR)
+    close_scan = LaserScan()
+    close_scan.angle_min = -math.pi
+    close_scan.angle_increment = 2.0 * math.pi / 360.0
+    close_scan.range_min = 0.02
+    close_scan.range_max = 12.0
+    close_scan.ranges = [0.20] * 360
+    for i in range(165, 196):  # cono frontal alrededor de 0 rad
+        close_scan.ranges[i] = 0.05
+    assert guard.classify(close_scan) == STOP
+
+    # 3. Pasillo largo despejado al frente (NaN en -30..+30 deg) pero paredes laterales a 1.0 m -> CLEAR
+    corridor = LaserScan()
+    corridor.angle_min = 0.0
+    corridor.angle_increment = 2.0 * math.pi / 360.0
+    corridor.range_min = 0.02
+    corridor.range_max = 12.0
+    corridor.ranges = [1.0] * 360
+    for i in list(range(0, 31)) + list(range(330, 360)):
+        corridor.ranges[i] = float('nan')
+    assert guard.classify(corridor) == CLEAR
+    guard.destroy_node()
+
+
+def test_new2_laser_odom_angle_sorting_0_to_2pi(ros):
+    import math
+    from sensor_msgs.msg import LaserScan
+    from roverto_autonomy.laser_odom_node import LaserOdomNode
+
+    node = LaserOdomNode()
+    scan = LaserScan()
+    scan.angle_min = 0.0
+    scan.angle_increment = 2.0 * math.pi / 360.0
+    scan.range_min = 0.02
+    scan.range_max = 12.0
+    scan.ranges = [1.5] * 360
+    for i in range(136, 225):
+        scan.ranges[i] = float('nan')  # arco trasero recortado por el LD19
+
+    pts = node._scan_to_points(scan)
+    rel_angles = np.arctan2(pts[:, 1] - node.ly, pts[:, 0] - node.lx)
+    # Los ángulos deben quedar estrictamente ordenados de -135 deg a +135 deg (sin salto +135 -> -135)
+    assert np.all(np.diff(rel_angles) > 0.0)
+    node.destroy_node()

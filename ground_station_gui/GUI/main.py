@@ -1,3 +1,4 @@
+import math
 import os
 import struct
 import sys
@@ -56,6 +57,8 @@ STALE_TIMEOUT_S = {
     ID_THERMAL: 30.0,
 }
 LINK_LOST_TIMEOUT_S = 6.0  # > 3 periodos de HEALTH (o sin ninguna trama del rover)
+MAX_DISTANCE_M = 100.0
+MAX_ANGLE_DEG = 360.0
 
 
 def _frame_end(buf, i):
@@ -295,7 +298,10 @@ if __name__ == "__main__":
         raw = entry_widget.get().strip().replace(",", ".")
         if not raw:
             return default
-        return float(raw)
+        val = float(raw)
+        if not math.isfinite(val):
+            raise ValueError("non-finite float")
+        return val
 
     def on_send():
         try:
@@ -304,10 +310,18 @@ if __name__ == "__main__":
         except ValueError:
             ins.text_state.set("Valor inválido")
             return
-        if d < 0.0 or (d == 0.0 and abs(ang) < 1e-3):
+        if (
+            not (math.isfinite(d) and math.isfinite(ang))
+            or d < 0.0
+            or d > MAX_DISTANCE_M
+            or abs(ang) > MAX_ANGLE_DEG
+            or (d == 0.0 and abs(ang) < 1e-3)
+        ):
             ins.text_state.set("Distancia/dirección inválida")
             return
-        gs.send_move(d, ang)
+        if gs.send_move(d, ang) is None:
+            ins.text_state.set("Distancia/dirección inválida")
+            return
         if d > 0.0 and abs(ang) >= 1e-3:
             ins.text_state.set(f"Girar {ang:+.1f}° y avanzar {d:.2f} m")
         elif d > 0.0:

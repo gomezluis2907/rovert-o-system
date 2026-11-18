@@ -97,6 +97,9 @@ class SimEsp32Emulator(Node):
         self.get_logger().info(log_msg)
 
     def _apply_command(self, cmd_id: int, distance_m: float, angle_deg: float):
+        if not (math.isfinite(distance_m) and math.isfinite(angle_deg)):
+            self.get_logger().warn('Ignoring command with non-finite distance_m or angle_deg')
+            return
         if cmd_id == CMD_STOP:
             self._reset_to_standby('DETENER command received -> STANDBY (mission active)')
             return
@@ -113,8 +116,14 @@ class SimEsp32Emulator(Node):
             self._publish(0.0, 0.0)
             self.get_logger().info('DETENER MISION received -> sending final map and stopping')
             return
-        if cmd_id != CMD_MOVE or (distance_m <= 0.0 and abs(angle_deg) < 1e-3):
-            self._reset_to_standby('STOP command received -> STANDBY')
+        if (
+            cmd_id != CMD_MOVE
+            or distance_m < 0.0
+            or distance_m > 100.0
+            or abs(angle_deg) > 360.0
+            or (distance_m == 0.0 and abs(angle_deg) < 1e-3)
+        ):
+            self._reset_to_standby('STOP/invalid move command received -> STANDBY')
             return
         if self.pose is None or not self._sensors_fresh():
             self.get_logger().warn('Sensors missing/stale (/odom or /obstacle_state); ignoring command')
@@ -136,6 +145,9 @@ class SimEsp32Emulator(Node):
     def on_mission_command(self, msg: Float32MultiArray):
         if len(msg.data) < 3:
             return
+        if not all(math.isfinite(float(v)) for v in msg.data[:3]):
+            self.get_logger().warn('Ignoring /mission_command with non-finite values')
+            return
         self._last_mission_cmd_mono = time.monotonic()
         cmd_id = int(round(msg.data[0]))
         dist = float(msg.data[1])
@@ -143,8 +155,11 @@ class SimEsp32Emulator(Node):
         self._apply_command(cmd_id, dist, angle)
 
     def on_command(self, msg: Float32):
-        # Ignore duplicate legacy message emitted by esp32_bridge_node in the same tick
-        if (time.monotonic() - self._last_mission_cmd_mono) < 0.05:
+        # Ignore legacy /gs_command once /mission_command is active (avoids clobbering angle_deg or GOAL_REACHED)
+        if self._last_mission_cmd_mono > 0.0:
+            return
+        if not math.isfinite(float(msg.data)):
+            self.get_logger().warn('Ignoring /gs_command with non-finite value')
             return
         if msg.data <= 0.0:
             self._apply_command(CMD_STOP, 0.0, 0.0)

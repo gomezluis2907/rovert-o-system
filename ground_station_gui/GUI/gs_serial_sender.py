@@ -1,3 +1,4 @@
+import math
 import random
 import struct
 import serial
@@ -10,6 +11,9 @@ CMD_STOP = 0
 CMD_MOVE = 1
 CMD_START_MISSION = 2
 CMD_STOP_MISSION = 3
+
+MAX_DISTANCE_M = 100.0
+MAX_ANGLE_DEG = 360.0
 
 
 class GroundStationSerial:
@@ -24,16 +28,21 @@ class GroundStationSerial:
             print(f"[GS] Sin hardware en {port}: modo dry-run")
 
     def _send(self, cmd_id: int, distance_m: float = 0.0, angle_deg: float = 0.0) -> bytes:
+        if not (math.isfinite(distance_m) and math.isfinite(angle_deg)):
+            raise ValueError("distance_m y angle_deg deben ser finitos")
         # Trama 0x01 COMMAND (13 B, <BBBBffB): 0xAA, 0x01, seq, cmd_id, distance_m, angle_deg, xor
-        body = struct.pack(
-            CMD_FMT,
-            SYNC,
-            CMD_ID,
-            self.seq & 0xFF,
-            cmd_id & 0xFF,
-            float(distance_m),
-            float(angle_deg),
-        )
+        try:
+            body = struct.pack(
+                CMD_FMT,
+                SYNC,
+                CMD_ID,
+                self.seq & 0xFF,
+                cmd_id & 0xFF,
+                float(distance_m),
+                float(angle_deg),
+            )
+        except (struct.error, OverflowError) as exc:
+            raise ValueError("valor fuera de rango float32") from exc
         self.seq = (self.seq + 1) & 0xFF
         chk = 0
         for b in body:
@@ -49,8 +58,16 @@ class GroundStationSerial:
         return frame
 
     def send_move(self, distance_m: float = 0.0, angle_deg: float = 0.0):
+        if (
+            not (math.isfinite(distance_m) and math.isfinite(angle_deg))
+            or distance_m < 0.0
+            or distance_m > MAX_DISTANCE_M
+            or abs(angle_deg) > MAX_ANGLE_DEG
+        ):
+            return None
         if distance_m > 0.0 or abs(angle_deg) > 1e-3:
-            self._send(CMD_MOVE, max(0.0, float(distance_m)), float(angle_deg))
+            return self._send(CMD_MOVE, float(distance_m), float(angle_deg))
+        return None
 
     def send_advance(self, distance_m: float, angle_deg: float = 0.0):
         self.send_move(distance_m, angle_deg)

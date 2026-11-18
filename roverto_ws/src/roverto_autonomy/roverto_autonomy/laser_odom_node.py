@@ -106,6 +106,9 @@ class LaserOdomNode(Node):
         valid = (np.isfinite(ranges) & (ranges >= r_min) & (ranges <= msg.range_max)
                  & (np.abs(angles) <= REAR_CROP_RAD))
         angles, ranges = angles[valid], ranges[valid]
+        if angles.size > 1:
+            order = np.argsort(angles)
+            angles, ranges = angles[order], ranges[order]
         # Downsample to <=150 rays so ICP stays under 2 ms on Raspberry Pi 4
         if angles.size > 150:
             step = max(1, angles.size // 150)

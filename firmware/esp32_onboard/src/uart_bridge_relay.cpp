@@ -132,10 +132,12 @@ void bridge_notify_radio_tx_status(bool ack_ok) {
         radio_fail_start_ms = 0;
         // No limpiar bridge_link_lost automáticamente: exige nuevo comando del operador
     } else {
-        if (radio_fail_start_ms == 0) {
-            radio_fail_start_ms = (now != 0) ? now : 1;
+        uint32_t fail_start = radio_fail_start_ms;
+        if (fail_start == 0) {
+            fail_start = (now != 0) ? now : 1;
+            radio_fail_start_ms = fail_start;
         }
-        if ((uint32_t)(now - radio_fail_start_ms) > LINK_TIMEOUT_MS) {
+        if ((int32_t)(now - fail_start) > (int32_t)LINK_TIMEOUT_MS) {
             trigger_link_lost();
         }
     }
@@ -217,8 +219,9 @@ void bridge_send_thermal(float temp_battery_c, float temp_pcb_c, float temp_lida
 // sensor_flags aporta bits 2..4 (0x04=BNO085 OK, 0x08=INA226 OK, 0x10=DS18B20 OK)
 void bridge_send_health(uint8_t rover_status, uint8_t sensor_flags) {
     static uint8_t seq = 0;
+    uint32_t last_pi = bridge_last_pi_ms;
     uint32_t ts = millis();
-    bool uart_ok  = (bridge_last_pi_ms != 0) && ((uint32_t)(ts - bridge_last_pi_ms) <= 2000);
+    bool uart_ok  = (last_pi != 0) && ((int32_t)(ts - last_pi) <= 2000);
     bool lidar_ok = uart_ok && ((bridge_pi_flags & 0x02) != 0);
     uint8_t pi_status = (bridge_pi_flags >> 2) & 0x03;
     uint8_t eff_status = 0;
@@ -331,14 +334,16 @@ static void bridge_task(void *) {
             }
         }
 
+        uint32_t fail_start = radio_fail_start_ms;
+        uint32_t last_hp = last_hp_tx_ms;
         uint32_t now = millis();
         // Watchdog de enlace: solo se dispara si hay fallos continuos de radio durante > 2 s
-        if (radio_fail_start_ms != 0 && (uint32_t)(now - radio_fail_start_ms) > LINK_TIMEOUT_MS) {
+        if (fail_start != 0 && (int32_t)(now - fail_start) > (int32_t)LINK_TIMEOUT_MS) {
             trigger_link_lost();
         }
 
         // Drenar 1 fragmento de mapa de baja prioridad si no hubo telemetría urgente en los últimos 5 ms
-        if (map_q_tail != map_q_head && (uint32_t)(now - last_hp_tx_ms) >= 5) {
+        if (map_q_tail != map_q_head && (int32_t)(now - last_hp) >= 5) {
             size_t slot = map_q_tail;
             uint8_t len = map_q_len[slot];
             map_q_tail = (map_q_tail + 1) % MAP_QUEUE_SLOTS;
