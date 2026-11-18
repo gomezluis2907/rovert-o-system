@@ -1,14 +1,14 @@
 import customtkinter as ctk
 import colors as c
 
-class App(ctk.CTk):
-    def __init__(self):
-        super().__init__(fg_color=c.white[0])
-        self.title("test")
-        self.geometry("1920x1080")
+#class App(ctk.CTk):
+#    def __init__(self):
+#        super().__init__(fg_color=c.white[0])
+#        self.title("test")
+#        self.geometry("1920x1080")
         
-        parameters = Parameters(master=self)
-        parameters.place(relx=0.05, rely=0.05, relwidth=0.9, relheight=0.9)
+#        parameters = Parameters(master=self)
+#        parameters.place(relx=0.05, rely=0.05, relwidth=0.9, relheight=0.9)
 
 # === clase padre (frame) ===
 class Parameters(ctk.CTkFrame):
@@ -362,5 +362,5 @@ class Parameters(ctk.CTkFrame):
                 str(valor)
             self.val_current.set(valor)
 
-app = App()
-app.mainloop()
+#app = App()
+#app.mainloop()
