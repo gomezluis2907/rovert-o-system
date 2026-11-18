@@ -9,6 +9,10 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import ByteMultiArray, Float32MultiArray, UInt8
+try:
+    from slam_toolbox.srv import Reset as SlamReset
+except ImportError:
+    SlamReset = None
 
 from roverto_autonomy.protocol import (
     bytes_to_msg_data, CMD_START_MISSION, CMD_STOP_MISSION,
@@ -83,6 +87,10 @@ class MapCompressorNode(Node):
         self.create_subscription(UInt8, '/rover_status', self.on_status, 10)
         self.create_subscription(Float32MultiArray, '/mission_command', self.on_mission_cmd, 10)
         self.create_timer(self.period, self.on_periodic)
+        self._slam_reset_cli = (
+            self.create_client(SlamReset, '/slam_toolbox/reset')
+            if SlamReset is not None else None
+        )
 
         self.latest = None
         self.dirty = False        # map changed since last transmission
@@ -112,8 +120,10 @@ class MapCompressorNode(Node):
             self.travel_dist = 0.0
             self.prev_xy = None
             self.last_send_sec = None
-            self.dirty = self.latest is not None
-            self.get_logger().info('INICIAR MISION: map sequence and travel counter reset')
+            self.latest = None
+            self.dirty = False
+            self._reset_slam()
+            self.get_logger().info('INICIAR MISION: map buffer, SLAM and travel counter reset')
         elif cmd_id == CMD_STOP_MISSION:
             # DETENER MISIÓN ya envía el mapa final: se cancela el envío diferido de GOAL_REACHED
             if self._goal_timer is not None:
@@ -121,6 +131,19 @@ class MapCompressorNode(Node):
                 self._goal_timer = None
             self._stop_mission_sec = self._now_sec()
             self.send_map('stop_mission')
+
+    def _reset_slam(self):
+        if self._slam_reset_cli is None or not self._slam_reset_cli.service_is_ready():
+            return
+        req = SlamReset.Request()
+        req.pause_new_measurements = False
+        fut = self._slam_reset_cli.call_async(req)
+        fut.add_done_callback(self._on_slam_reset_done)
+
+    def _on_slam_reset_done(self, _fut):
+        self.latest = None
+        self.dirty = False
+        self.get_logger().info('slam_toolbox /map reset complete')
 
     def on_odom(self, msg: Odometry):
         x, y = msg.pose.pose.position.x, msg.pose.pose.position.y

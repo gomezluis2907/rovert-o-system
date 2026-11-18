@@ -377,3 +377,129 @@ def test_mission_sensor_timeout():
     node.on_timer()
     assert node.status == STANDBY
     node.destroy_node()
+
+
+def test_c1_pi_telemetry_carries_rover_status(ros):
+    node = Esp32BridgeNode(parameter_overrides=[
+        rclpy.parameter.Parameter('mock_serial', value=True)])
+    _mark_bridge_fresh(node)
+    for status in (0, 1, 2, 3):
+        node.rover_status = status
+        node.on_pi_telemetry()
+        _vel, _ct, _cp, _ram, flags = unpack_pi_telemetry(node.ser.writes[-1][1])
+        assert ((flags >> 2) & 0x03) == status
+    # Si /rover_status está vencido, 0x90 debe reportar STANDBY (0) en los bits 2..3
+    node.rover_status = 3
+    node.last_status_mono = time.monotonic() - 2.0
+    node.on_pi_telemetry()
+    _vel, _ct, _cp, _ram, flags = unpack_pi_telemetry(node.ser.writes[-1][1])
+    assert ((flags >> 2) & 0x03) == 0
+    node.destroy_node()
+
+
+def test_c2_start_mission_resets_odom_and_map(ros):
+    from nav_msgs.msg import OccupancyGrid
+    from roverto_autonomy.laser_odom_node import LaserOdomNode
+    from roverto_autonomy.map_compressor_node import MapCompressorNode
+
+    odom_node = LaserOdomNode()
+    odom_node.x, odom_node.y, odom_node.yaw = 1.8, -0.4, 0.75
+    odom_node.prev_pts = np.ones((20, 2))
+    start_cmd = Float32MultiArray(data=[2.0, 0.0, 0.0])
+    odom_node.on_mission_cmd(start_cmd)
+    assert (odom_node.x, odom_node.y, odom_node.yaw) == (0.0, 0.0, 0.0)
+    assert odom_node.prev_pts is None
+    odom_node.destroy_node()
+
+    comp_node = MapCompressorNode()
+    old_map = OccupancyGrid()
+    old_map.info.width, old_map.info.height, old_map.info.resolution = 10, 10, 0.1
+    old_map.data = [0] * 100
+    comp_node.on_map(old_map)
+    assert comp_node.latest is not None and comp_node.dirty is True
+    comp_node.on_mission_cmd(start_cmd)
+    assert comp_node.latest is None and comp_node.dirty is False
+    comp_node.destroy_node()
+
+
+def test_c3_gui_staleness_and_link_loss():
+    import struct
+    gui_dir = os.path.join(GS, 'GUI')
+    if gui_dir not in sys.path:
+        sys.path.insert(0, gui_dir)
+    import main as gui_main
+
+    class _Var:
+        def __init__(self, v='null'):
+            self.v = v
+
+        def set(self, v):
+            self.v = str(v)
+
+        def get(self):
+            return self.v
+
+    class _Obj:
+        pass
+
+    params = _Obj()
+    params.map_params = _Obj()
+    params.map_params.val_speed = _Var()
+    params.map_params.val_angular_ac_x = _Var()
+    params.map_params.val_angular_ac_y = _Var()
+    params.map_params.val_angular_ac_z = _Var()
+    params.map = _Obj()
+    params.map.val_voltage = _Var()
+    params.map.val_current = _Var()
+    params.rover_params = _Obj()
+    params.rover_params.val_bat_temp = _Var()
+    params.rover_params.val_env_temp = _Var()
+    params.rover_params.val_lidar_temp = _Var()
+    params.rasp_params = _Obj()
+    params.rasp_params.val_temp = _Var()
+    params.rasp_params.val_cpu = _Var()
+    params.rasp_params.val_ram = _Var()
+    params.instructions = _Obj()
+    params.instructions.text_state = _Var('Detenido')
+
+    def _frame(fmt, *vals):
+        body = struct.pack(fmt[:-1], *vals)
+        return body + bytes([xor_checksum(body)])
+
+    state = {'last_rx': 0.0, 'by_id': {}, 'stale': set(), 'last_any_rx': 0.0, 'link_lost': False}
+    t0 = 100.0
+    nav = _frame(gui_main.NAV_FMT, 0xAA, 0x02, 1, 1000, 0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.04)
+    pwr = _frame(gui_main.POWER_FMT, 0xAA, 0x03, 1, 1000, 12.1, 0.85, 0)
+    thm = _frame(gui_main.THERMAL_FMT, 0xAA, 0x04, 1, 1000, 28.0, 24.5, 26.0, 0)
+    hlt = _frame(gui_main.HEALTH_FMT, 0xAA, 0x05, 1, 1000, 3, 3, 52, 30, 1400, 0x03)
+
+    for fr in (nav, pwr, thm, hlt):
+        gui_main.handle_telemetry_frame(fr, params, state, now=t0)
+
+    assert params.instructions.text_state.get() == 'Meta alcanzada'
+    assert params.map_params.val_speed.get() == '0.040'
+    assert params.map.val_voltage.get() == '12.10'
+    assert params.rover_params.val_lidar_temp.get() == '26.00'
+    assert params.rasp_params.val_temp.get() == '52'
+
+    # 0.35 s (> 3 periodos de NAV = 0.3 s): solo NAV vence
+    gui_main.check_telemetry_staleness(params, state, now=t0 + 0.35)
+    assert params.map_params.val_speed.get() == 'null'
+    assert params.map.val_voltage.get() == '12.10'
+
+    # 3.1 s (> 3 periodos de POWER = 3.0 s): POWER vence, HEALTH y THERMAL siguen vigentes
+    gui_main.check_telemetry_staleness(params, state, now=t0 + 3.1)
+    assert params.map.val_voltage.get() == 'null'
+    assert params.rasp_params.val_temp.get() == '52'
+    assert params.rover_params.val_lidar_temp.get() == '26.00'
+
+    # 6.1 s (> 3 periodos de HEALTH = 6.0 s): HEALTH vence y se declara Enlace perdido (Standby)
+    gui_main.check_telemetry_staleness(params, state, now=t0 + 6.1)
+    assert params.rasp_params.val_temp.get() == 'null'
+    assert params.instructions.text_state.get() == 'Enlace perdido (Standby)'
+    assert params.rover_params.val_lidar_temp.get() == '26.00'
+
+    # 30.1 s (> 3 periodos de THERMAL = 30.0 s): THERMAL vence
+    gui_main.check_telemetry_staleness(params, state, now=t0 + 30.1)
+    assert params.rover_params.val_lidar_temp.get() == 'null'
+    assert params.rover_params.val_bat_temp.get() == 'null'

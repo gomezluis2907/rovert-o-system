@@ -402,11 +402,14 @@ class Esp32BridgeNode(Node):
         if self.input_timeout <= 0.0:
             lidar_ok = self.last_scan_mono > 0.0
             odom_ok = self.last_odom_mono > 0.0
+            status_ok = self.last_status_mono > 0.0
         else:
             lidar_ok = (self.last_scan_mono > 0.0) and ((now - self.last_scan_mono) <= self.input_timeout)
             odom_ok = (self.last_odom_mono > 0.0) and ((now - self.last_odom_mono) <= self.input_timeout)
+            status_ok = (self.last_status_mono > 0.0) and ((now - self.last_status_mono) <= self.input_timeout)
         vel = self.pi_velocity_mps if odom_ok else 0.0
-        pi_flags = 0x01 | (0x02 if lidar_ok else 0x00)
+        r_status = (int(self.rover_status) & 0x03) if status_ok else 0
+        pi_flags = 0x01 | (0x02 if lidar_ok else 0x00) | (r_status << 2)
         self._write(pack_pi_telemetry(
             vel, self.cpu_temp_c, self.cpu_pct, self.ram_mb, pi_flags))
 

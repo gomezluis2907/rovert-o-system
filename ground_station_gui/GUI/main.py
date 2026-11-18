@@ -47,6 +47,16 @@ ROVER_STATUS_TEXT = {
     3: "Meta alcanzada",
 }
 
+# Regla de "3 periodos" de docs/ICD.md (sección 2):
+# NAV (10 Hz -> 0.3 s), POWER (1 Hz -> 3.0 s), HEALTH (0.5 Hz -> 6.0 s), THERMAL (0.1 Hz -> 30.0 s)
+STALE_TIMEOUT_S = {
+    ID_NAV: 0.3,
+    ID_POWER: 3.0,
+    ID_HEALTH: 6.0,
+    ID_THERMAL: 30.0,
+}
+LINK_LOST_TIMEOUT_S = 6.0  # > 3 periodos de HEALTH (o sin ninguna trama del rover)
+
 
 def _frame_end(buf, i):
     """Fin de la trama ICD que empieza en i: >0 válido, 0 incompleto, -1 inválido."""
@@ -113,8 +123,17 @@ def show_map(label, grid, meta):
                     text=f"{w}x{h} @ {meta['resolution_mm']} mm/celda", compound="top")
 
 
-def handle_telemetry_frame(frame: bytes, params, thermal_state: dict):
+def handle_telemetry_frame(frame: bytes, params, thermal_state: dict, now: float = None):
+    if now is None:
+        now = time.monotonic()
     pkt_id = frame[1]
+    by_id = thermal_state.setdefault("by_id", {})
+    stale = thermal_state.setdefault("stale", set())
+    by_id[pkt_id] = now
+    stale.discard(pkt_id)
+    thermal_state["last_any_rx"] = now
+    thermal_state["link_lost"] = False
+
     if pkt_id == ID_NAV:
         _, _, _seq, _ts, _yaw, _pitch, _roll, ax, ay, az, vel, _ = struct.unpack(NAV_FMT, frame)
         params.map_params.val_speed.set(f"{vel:.3f}")
@@ -130,7 +149,7 @@ def handle_telemetry_frame(frame: bytes, params, thermal_state: dict):
         params.rover_params.val_bat_temp.set(f"{t_bat:.2f}")
         params.rover_params.val_env_temp.set(f"{t_pcb:.2f}")
         params.rover_params.val_lidar_temp.set(f"{t_lidar:.2f}")
-        thermal_state["last_rx"] = time.monotonic()
+        thermal_state["last_rx"] = now
     elif pkt_id == ID_HEALTH:
         _, _, _seq, _ts, r_status, _obs, cpu_t, cpu_p, ram_mb, h_flags, _ = struct.unpack(
             HEALTH_FMT, frame
@@ -142,6 +161,56 @@ def handle_telemetry_frame(frame: bytes, params, thermal_state: dict):
             params.instructions.text_state.set("Enlace perdido (Standby)")
         elif r_status in ROVER_STATUS_TEXT:
             params.instructions.text_state.set(ROVER_STATUS_TEXT[r_status])
+
+
+def check_telemetry_staleness(params, thermal_state: dict, now: float = None):
+    """Aplica la regla de '3 periodos' (docs/ICD.md) y detecta pérdida de enlace en la GUI."""
+    if now is None:
+        now = time.monotonic()
+    by_id = thermal_state.setdefault("by_id", {})
+    stale = thermal_state.setdefault("stale", set())
+
+    # Mantener canales DS18B20 (0.1 Hz -> ventana de 3 periodos = 30 s) activos en Gráficas
+    t_th = by_id.get(ID_THERMAL, thermal_state.get("last_rx", 0.0))
+    if t_th > 0.0 and (now - t_th) <= STALE_TIMEOUT_S[ID_THERMAL]:
+        if (now - thermal_state.get("last_thermal_refresh", 0.0)) >= 1.0:
+            thermal_state["last_thermal_refresh"] = now
+            params.rover_params.val_env_temp.set(params.rover_params.val_env_temp.get())
+            params.rover_params.val_bat_temp.set(params.rover_params.val_bat_temp.get())
+            params.rover_params.val_lidar_temp.set(params.rover_params.val_lidar_temp.get())
+
+    # Marcar como "null" los parámetros cuyo paquete supere 3 periodos sin actualizarse
+    for pkt_id, timeout_s in STALE_TIMEOUT_S.items():
+        ts = by_id.get(pkt_id, 0.0)
+        if ts > 0.0 and (now - ts) > timeout_s and pkt_id not in stale:
+            stale.add(pkt_id)
+            if pkt_id == ID_NAV:
+                params.map_params.val_speed.set("null")
+                params.map_params.val_angular_ac_x.set("null")
+                params.map_params.val_angular_ac_y.set("null")
+                params.map_params.val_angular_ac_z.set("null")
+            elif pkt_id == ID_POWER:
+                params.map.val_voltage.set("null")
+                params.map.val_current.set("null")
+            elif pkt_id == ID_THERMAL:
+                params.rover_params.val_bat_temp.set("null")
+                params.rover_params.val_env_temp.set("null")
+                params.rover_params.val_lidar_temp.set("null")
+            elif pkt_id == ID_HEALTH:
+                params.rasp_params.val_temp.set("null")
+                params.rasp_params.val_cpu.set("null")
+                params.rasp_params.val_ram.set("null")
+
+    # Pérdida de enlace si transcurren > 6 s (3 periodos de HEALTH) sin señal o sin HEALTH
+    last_any = thermal_state.get("last_any_rx", 0.0)
+    t_health = by_id.get(ID_HEALTH, 0.0)
+    link_expired = (
+        (last_any > 0.0 and (now - last_any) > LINK_LOST_TIMEOUT_S)
+        or (t_health > 0.0 and (now - t_health) > STALE_TIMEOUT_S[ID_HEALTH])
+    )
+    if link_expired and not thermal_state.get("link_lost", False):
+        thermal_state["link_lost"] = True
+        params.instructions.text_state.set("Enlace perdido (Standby)")
 
 
 def serial_reader(gs, app, params, label, thermal_state):
@@ -161,6 +230,7 @@ def serial_reader(gs, app, params, label, thermal_state):
         for frame in extract_frames(buf):
             pkt_id = frame[1]
             if pkt_id in (ID_MAP, ID_MAP_LEGACY):
+                thermal_state["last_any_rx"] = time.monotonic()
                 gs_map_decoder.SYNC2 = pkt_id
                 res = dec.parse_packet(frame)
                 if res:
@@ -210,19 +280,16 @@ if __name__ == "__main__":
     map_label.lower()
 
     mission_state = {"running": False, "t0": 0.0}
-    thermal_state = {"last_rx": 0.0}
+    thermal_state = {"last_rx": 0.0, "by_id": {}, "stale": set(), "last_any_rx": 0.0, "link_lost": False}
 
     def _tick_ui():
         now = time.monotonic()
         if mission_state["running"]:
             params.map.val_time.set(f"{int(now - mission_state['t0'])}")
-        # Mantener canales DS18B20 (0.1 Hz -> ventana de 3 periodos = 30 s) activos en Gráficas
-        if thermal_state["last_rx"] > 0.0 and (now - thermal_state["last_rx"]) <= 30.0:
-            params.rover_params.val_env_temp.set(params.rover_params.val_env_temp.get())
-            params.rover_params.val_bat_temp.set(params.rover_params.val_bat_temp.get())
-        app.after(1000, _tick_ui)
+        check_telemetry_staleness(params, thermal_state, now)
+        app.after(100, _tick_ui)
 
-    app.after(1000, _tick_ui)
+    app.after(100, _tick_ui)
 
     def _parse_float_entry(entry_widget, default=0.0):
         raw = entry_widget.get().strip().replace(",", ".")

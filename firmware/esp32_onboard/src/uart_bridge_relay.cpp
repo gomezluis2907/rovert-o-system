@@ -41,7 +41,8 @@ volatile float    bridge_pi_velocity_mps = 0.0f;  // velocidad lineal desde /odo
 volatile uint8_t  bridge_pi_cpu_temp_c   = 0;     // temperatura SoC RPi en °C (trama 0x90)
 volatile uint8_t  bridge_pi_cpu_pct      = 0;     // uso de CPU RPi en % (trama 0x90)
 volatile uint16_t bridge_pi_ram_mb       = 0;     // RAM usada en RPi en MB (trama 0x90)
-volatile uint8_t  bridge_pi_flags        = 0;     // bit0=UART Pi ok, bit1=LiDAR /scan ok (trama 0x90)
+volatile uint8_t  bridge_pi_flags        = 0;     // bit0=UART Pi ok, bit1=LiDAR /scan ok, bits2..3=rover_status (trama 0x90)
+volatile uint8_t  bridge_pi_rover_status = 0;     // rover_status (0..3) reportado por la Pi en 0x90
 volatile uint8_t  bridge_last_cmd_id     = 0;     // último cmd_id recibido (0..3)
 volatile float    bridge_last_cmd_dist_m = 0.0f;  // última distancia recibida (m)
 volatile float    bridge_last_cmd_angle  = 0.0f;  // último ángulo recibido (°)
@@ -219,6 +220,15 @@ void bridge_send_health(uint8_t rover_status, uint8_t sensor_flags) {
     uint32_t ts = millis();
     bool uart_ok  = (bridge_last_pi_ms != 0) && ((uint32_t)(ts - bridge_last_pi_ms) <= 2000);
     bool lidar_ok = uart_ok && ((bridge_pi_flags & 0x02) != 0);
+    uint8_t pi_status = (bridge_pi_flags >> 2) & 0x03;
+    uint8_t eff_status = 0;
+    if (!bridge_link_lost && uart_ok) {
+        if (bridge_pi_flags & 0x01) {
+            eff_status = (pi_status == 1 && rover_status == 2) ? 2 : pi_status;
+        } else {
+            eff_status = rover_status;
+        }
+    }
     uint8_t flags = (sensor_flags & 0x1C)
                   | (uart_ok  ? 0x01 : 0x00)
                   | (lidar_ok ? 0x02 : 0x00)
@@ -230,7 +240,7 @@ void bridge_send_health(uint8_t rover_status, uint8_t sensor_flags) {
         ID_HEALTH,
         seq++,
         0, 0, 0, 0,
-        rover_status,
+        eff_status,
         bridge_obstacle_state,
         bridge_pi_cpu_temp_c,
         bridge_pi_cpu_pct,
@@ -243,6 +253,10 @@ void bridge_send_health(uint8_t rover_status, uint8_t sensor_flags) {
     f[14] = xor8(f, 14);
     last_hp_tx_ms = ts;
     telecom_send_frame(f, sizeof(f));
+}
+
+void bridge_send_health(uint8_t sensor_flags) {
+    bridge_send_health(bridge_pi_rover_status, sensor_flags);
 }
 
 // 0x55 ENCODERS (12 B, <BBiiBB) hacia la Pi (opcional si hay encoders físicos)
@@ -273,6 +287,7 @@ static void handle_frame(const uint8_t *f, size_t n) {
         bridge_pi_cpu_pct      = f[7];
         bridge_pi_ram_mb       = ram;
         bridge_pi_flags        = f[10];
+        bridge_pi_rover_status = (f[10] >> 2) & 0x03;
     } else if (id == ID_MAP || id == ID_P3_LEG) {
         enqueue_map_chunk(f, n);
     }

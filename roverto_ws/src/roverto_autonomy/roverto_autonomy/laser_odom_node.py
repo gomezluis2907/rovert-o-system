@@ -8,9 +8,11 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Float32MultiArray
 from tf2_ros import TransformBroadcaster
 
 from roverto_autonomy.calibration import load_calibration
+from roverto_autonomy.protocol import CMD_START_MISSION
 
 REAR_CROP_RAD = 135.0 * (math.pi / 180.0)  # Ignore rear arc (>135 deg) obstructed by the chassis
 
@@ -73,6 +75,7 @@ class LaserOdomNode(Node):
         self.odom_pub = self.create_publisher(Odometry, '/odom', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
         self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
+        self.create_subscription(Float32MultiArray, '/mission_command', self.on_mission_cmd, 10)
 
         self.prev_pts = None
         self.prev_stamp = None
@@ -80,6 +83,16 @@ class LaserOdomNode(Node):
         self.y = 0.0
         self.yaw = 0.0
         self.get_logger().info(f'Laser odometry active (lidar offset x={self.lx:.3f} m)')
+
+    def on_mission_cmd(self, msg: Float32MultiArray):
+        if len(msg.data) >= 1 and int(round(msg.data[0])) == CMD_START_MISSION:
+            self.x = 0.0
+            self.y = 0.0
+            self.yaw = 0.0
+            self.prev_pts = None
+            self.prev_stamp = None
+            self._publish(self.get_clock().now(), 0.0, 0.0)
+            self.get_logger().info('INICIAR MISION: laser odometry reset to (0, 0, 0)')
 
     def _scan_to_points(self, msg: LaserScan) -> np.ndarray:
         """Convert valid forward/side LaserScan rays into Nx2 points in base_footprint frame."""
