@@ -56,10 +56,11 @@ El puente `esp32_bridge_node` fuerza el estado `3` (`STOP`) cuando la misión es
 
 ## 5. Protecciones automáticas de seguridad
 
-La función `rover_state_machine_step()` detiene los motores (`ROVER_STANDBY`) antes de leer cualquier giro cuando ocurre una de estas dos fallas:
+La función `rover_state_machine_step()` y la `Raspberry Pi` detienen los motores (`ROVER_STANDBY`) cuando ocurre una de estas tres fallas:
 
-* **Pérdida de radio (`bridge_link_lost`):** La `ESP32-Onboard` fuerza `OBS_STOP` si pasa más de `2000 ms` (`2 s`) sin comunicación válida desde la Estación Terrena.
-* **Pérdida de UART (`PI_UART_TIMEOUT_MS`):** La máquina de estados frena el rover si la `Raspberry Pi` nunca ha respondido o lleva más de `1000 ms` (`1 s`) sin mandar tramas válidas.
+* **Pérdida de radio (`bridge_link_lost`):** La `ESP32-Onboard` fuerza `OBS_STOP`, envía un `0x01 STOP` por UART a la `Raspberry Pi` y queda enclavada en `STANDBY` cuando el radio falla por más de `2000 ms` (`2 s`) hasta recibir un comando nuevo.
+* **Pérdida de UART (`PI_UART_TIMEOUT_MS`):** La máquina de estados frena el rover cuando la `Raspberry Pi` nunca respondió o lleva más de `1000 ms` (`1 s`) sin mandar tramas válidas.
+* **Falta de datos ROS 2 (`input_timeout_sec`):** La `Raspberry Pi` fuerza `OBS_STOP` y vuelve a `STANDBY` cuando `/scan`, `/odom`, `/rover_status` u `/obstacle_state` dejan de llegar por más de `1.0 s`.
 
 ---
 

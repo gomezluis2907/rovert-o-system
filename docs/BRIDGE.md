@@ -33,10 +33,12 @@ El rover tiene dos tarjetas a bordo que necesitan pasarse información todo el t
    * El nodo abre el puerto `/dev/ttyAMA0` a `115200` baudios sin bloquear el procesador.
    * Un reloj de `100 Hz` lee los bytes entrantes con `Packet1Parser`, verifica el sello `XOR` y publica las órdenes en `/mission_command`.
    * Tres relojes de salida envían el estado de manejo (`5 Hz`), los datos de la Pi (`10 Hz`) y la cola de pedazos de mapa (`20 Hz`).
+   * El puente fuerza `3 (STOP)` y regresa la misión a `STANDBY` cuando `/scan`, `/odom`, `/rover_status` u `/obstacle_state` dejan de llegar por más de `1.0 s`.
 2. **En la `ESP32-Onboard` (`uart_bridge_relay.cpp`):**
    * El archivo arranca solo una tarea `FreeRTOS` (`bridge_task`) en el núcleo `1` antes de `setup()`.
    * La tarea escucha `Serial1`, valida el byte `XOR` y guarda los datos en variables compartidas (`bridge_obstacle_state`, `bridge_pi_velocity_mps`, `bridge_pi_cpu_temp_c`, `bridge_pi_cpu_pct`, `bridge_pi_ram_mb`).
    * Una cola circular de `16` espacios guarda los pedazos de mapa y solo los suelta al radio cuando no hay telemetría urgente (`NAV`, `POWER`, `THERMAL`, `HEALTH`).
+   * El puente fuerza `3 (STOP)`, envía `0x01 STOP` a la `Raspberry Pi` y queda enclavado en `STANDBY` cuando el radio falla por más de `2.0 s` hasta recibir una orden nueva.
 
 ---
 
