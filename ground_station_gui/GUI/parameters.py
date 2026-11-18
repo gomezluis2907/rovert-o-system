@@ -1,6 +1,15 @@
 import customtkinter as ctk
 import colors as c
 
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__(fg_color=c.white[0])
+        self.title("test")
+        self.geometry("1920x1080")
+        
+        parameters = Parameters(master=self)
+        parameters.place(relx=0.05, rely=0.05, relwidth=0.9, relheight=0.9)
+
 # === clase padre (frame) ===
 class Parameters(ctk.CTkFrame):
     # parametros de la clase
@@ -9,12 +18,12 @@ class Parameters(ctk.CTkFrame):
         super().__init__(master, corner_radius=32, fg_color= c.gray[3], border_width=4, border_color=c.black[1])
         self.border_color = c.red[2]
         self.grid_columnconfigure((0, 1, 2), weight=1)
-        self.grid_rowconfigure((0, 1, 2), weight=1)
+        self.grid_rowconfigure((0, 1, 2, 3), weight=1)
         
         # fuentes de la interfaz
-        self.fonts = [ctk.CTkFont(family="Noto Sans Mono", size=24, weight="bold"), ctk.CTkFont(family="Noto Sans Mono", size=24, weight="normal"), ctk.CTkFont(family="Noto Sans Mono", size=24, slant="italic")]
+        self.fonts = [ctk.CTkFont(family="Noto Sans Mono", size=20, weight="bold"), ctk.CTkFont(family="Noto Sans Mono", size=20, weight="normal"), ctk.CTkFont(family="Noto Sans Mono", size=20, slant="italic")]
         
-        # instancia de seccion (frame) de parametros del rover
+        # ===== instancia de seccion (frame) de parametros del rover =====
         self.rover_params = self.RoverParams(master=self)
         self.rover_params.grid(row=0, column=2, sticky="nsew", padx=16, pady=16)
         self.rover_params.grid_columnconfigure((0, 1, 2), weight=1)
@@ -24,19 +33,25 @@ class Parameters(ctk.CTkFrame):
         for widget in self.rover_params.winfo_children():
             if isinstance(widget, ctk.CTkLabel):
                 widget.configure(text_color=c.black[1])
+                
+        # ===== instancia de seccion (frame) de parametros de rasputin =====
+        self.rasp_params = self.RaspParams(master=self)
+        self.rasp_params.grid(row=1, column=2, sticky="nsew", padx=16, pady=16)
+        self.rasp_params.grid_columnconfigure((0, 1, 2), weight=1)
+        self.rasp_params.grid_rowconfigure((0, 1, 2), weight=1)
         
-        # instancia de seccion (frame) de instrucciones
+        # ===== instancia de seccion (frame) de instrucciones =====
         self.instructions = self.Instructions(master=self)
-        self.instructions.grid(row=1, column=2, rowspan=2, sticky="nsew", padx=16, pady=16)
+        self.instructions.grid(row=2, column=2, rowspan=2, sticky="nsew", padx=16, pady=16)
         
         # cambio de color del texto
         for widget in self.instructions.winfo_children():
             if isinstance(widget, ctk.CTkLabel):
                 widget.configure(text_color=c.black[1])
         
-        # instancia de seccion (frame) de parametros del mapa
+        # ===== instancia de seccion (frame) de parametros del mapa =====
         self.map_params = self.MapParams(master=self)
-        self.map_params.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=16, pady=16)
+        self.map_params.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=16, pady=16)
         self.map_params.grid_columnconfigure((0, 1, 2), weight=1)
         self.map_params.grid_rowconfigure((0, 1, 2, 3), weight=1)
         
@@ -45,9 +60,9 @@ class Parameters(ctk.CTkFrame):
             if isinstance(widget, ctk.CTkLabel):
                 widget.configure(text_color=c.black[1])
         
-        # instancia de seccion (frame) de mapa
+        # ===== instancia de seccion (frame) de mapa =====
         self.map = self.Map(master=self)
-        self.map.grid(row=0, column=0, rowspan=2, columnspan=2, sticky="nsew", padx=16, pady=16)
+        self.map.grid(row=0, column=0, rowspan=3, columnspan=2, sticky="nsew", padx=16, pady=16)
 
     # === clase de seccion de instrucciones (frame) ===
     class Instructions(ctk.CTkFrame):
@@ -102,7 +117,7 @@ class Parameters(ctk.CTkFrame):
             
             # variables de texto
             self.text_env_temp = ctk.StringVar(value="(min, max)") # === modificar por valores de electronica ===
-            self.text_bat_temp = ctk.StringVar(value="(min, max)") # === modificar por valores de electronica ===
+            self.text_bat_temp = ctk.StringVar(value="(5 \u00b0C, 30 \u00b0C)") # === modificar por valores de electronica ===
             
             #variables de valor
             self.val_env_temp = ctk.StringVar(value="null")
@@ -147,6 +162,61 @@ class Parameters(ctk.CTkFrame):
             if type(valor) != "str":
                 str(valor)
             self.val_bat_temp.set(valor)
+    
+    # === clase de seccion de parametros de rasputin (frame) ===        
+    class RaspParams(ctk.CTkFrame):
+        # parametros de la clase
+        def __init__(self, master):
+            # inicializacion del frame
+            super().__init__(master, corner_radius=32, fg_color=c.white[0], border_width=4, border_color=c.black[1])
+            
+            # variables de texto
+            self.text_cpu = ctk.StringVar(value="(20%, 70%)")
+            self.text_ram = ctk.StringVar(value="(1250 MB, 3000 MB)")
+            
+            # variables de valor
+            self.val_cpu = ctk.StringVar(value="null")
+            self.val_ram = ctk.StringVar(value="null")
+            
+            # parametro
+            self.label_param = ctk.CTkLabel(master=self, text="Parámetro", font=master.fonts[0], text_color=c.black[1])
+            self.label_param.grid(row=0, column=0)
+            
+            # actual
+            self.label_param = ctk.CTkLabel(master=self, text="Actual", font=master.fonts[0], text_color=c.black[1])
+            self.label_param.grid(row=0, column=1)
+            
+            # normal
+            self.label_param = ctk.CTkLabel(master=self, text="Normal", font=master.fonts[0], text_color=c.black[1])
+            self.label_param.grid(row=0, column=2)
+            
+            # cpu
+            self.label_cpu = ctk.CTkLabel(master=self, text="CPU [%]", font=master.fonts[1], text_color=c.black[1])
+            self.label_cpu.grid(row=1, column=0)
+            self.label_cpu_current = ctk.CTkLabel(master=self, textvariable=self.val_cpu, font=master.fonts[2], text_color=c.black[1])
+            self.label_cpu_current.grid(row=1, column=1)
+            self.label_cpu_normal = ctk.CTkLabel(master=self, textvariable=self.text_cpu, font=master.fonts[1], text_color=c.black[1])
+            self.label_cpu_normal.grid(row=1, column=2)
+            
+            # ram
+            self.label_ram = ctk.CTkLabel(master=self, text="RAM [MB]", font=master.fonts[1], text_color=c.black[1])
+            self.label_ram.grid(row=2, column=0)
+            self.label_ram_current = ctk.CTkLabel(master=self, textvariable=self.val_ram, font=master.fonts[2], text_color=c.black[1])
+            self.label_ram_current.grid(row=2, column=1)
+            self.label_ram_normal = ctk.CTkLabel(master=self, textvariable=self.text_ram, font=master.fonts[1], text_color=c.black[1])
+            self.label_ram_normal.grid(row=2, column=2)
+            
+         # funcion para establecer el valor de ambiente
+        def set_cpu(self, valor="null"):
+            if type(valor) != "str":
+                str(valor)
+            self.val_cpu.set(valor)
+        
+        # funcion para establecer el valor de bateria
+        def set_ram(self, valor="null"):
+            if type(valor) != "str":
+                str(valor)
+            self.val_ram.set(valor)
     
     # === clase de seccion de parametros del mapa (frame) ===        
     class MapParams(ctk.CTkFrame):
@@ -216,3 +286,6 @@ class Parameters(ctk.CTkFrame):
     class Map(ctk.CTkFrame):
         def __init__(self, master):
             super().__init__(master, corner_radius=32,  fg_color= c.white[0], border_width=4, border_color=c.black[1])
+
+app = App()
+app.mainloop()
