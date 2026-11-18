@@ -92,6 +92,7 @@ class MapCompressorNode(Node):
         self.prev_xy = None
         self.travel_dist = 0.0
         self.last_send_sec = None
+        self._stop_mission_sec = None  # instante del último DETENER MISIÓN (evita enviar el mapa dos veces)
 
     def _now_sec(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -114,6 +115,11 @@ class MapCompressorNode(Node):
             self.dirty = self.latest is not None
             self.get_logger().info('INICIAR MISION: map sequence and travel counter reset')
         elif cmd_id == CMD_STOP_MISSION:
+            # DETENER MISIÓN ya envía el mapa final: se cancela el envío diferido de GOAL_REACHED
+            if self._goal_timer is not None:
+                self._goal_timer.cancel()
+                self._goal_timer = None
+            self._stop_mission_sec = self._now_sec()
             self.send_map('stop_mission')
 
     def on_odom(self, msg: Odometry):
@@ -132,7 +138,9 @@ class MapCompressorNode(Node):
         self.latest = msg
 
     def on_status(self, msg: UInt8):
-        if msg.data == GOAL_REACHED and self.prev_status != GOAL_REACHED:
+        recent_stop = (self._stop_mission_sec is not None
+                       and (self._now_sec() - self._stop_mission_sec) < 5.0)
+        if msg.data == GOAL_REACHED and self.prev_status != GOAL_REACHED and not recent_stop:
             self.get_logger().info(
                 f'GOAL_REACHED: sending map in {self.goal_delay:.1f} s (let SLAM finish updating)')
             if self._goal_timer is not None:

@@ -13,16 +13,14 @@ from roverto_autonomy.esp32_bridge_node import Esp32BridgeNode
 from roverto_autonomy.laser_odom_node import icp_2d
 from roverto_autonomy.map_compressor_node import compress_grid, frame_chunks
 from roverto_autonomy.protocol import (
-    bytes_to_msg_data, P3_ID, pack_packet1, pack_packet2, pack_packet3, pack_packet4,
+    bytes_to_msg_data, pack_packet1, pack_packet2, pack_packet3, pack_packet4,
     pack_pi_telemetry, Packet1Parser, unpack_packet3, unpack_packet4,
     unpack_pi_telemetry, xor_checksum)
 
 GS = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..',
                                   'ground_station_gui'))
 sys.path.insert(0, GS)
-import gs_map_decoder  # noqa: E402
-from gs_map_decoder import MapDecoder  # noqa: E402
-gs_map_decoder.SYNC2 = P3_ID  # in-memory match to ICD 0x06 while GS folder stays pending
+from gs_map_decoder import iter_frames, MapDecoder  # noqa: E402
 
 
 def test_packet1_roundtrip_and_resync():
@@ -192,6 +190,7 @@ def test_mission_turn_and_commands():
         EXECUTING, GOAL_REACHED, SimEsp32Emulator, STANDBY)
     node = SimEsp32Emulator()
     node.pose = (0.0, 0.0, 0.0)
+    node.last_odom_mono = node.last_obstacle_mono = time.monotonic()
     # 1. Pure turn (+90 deg, 0.0 m)
     node._apply_command(1, 0.0, 90.0)
     assert node.status == EXECUTING and node.turning_to_heading
@@ -208,9 +207,19 @@ def test_mission_turn_and_commands():
     node.destroy_node()
 
 
+def _mark_bridge_fresh(node, now=None):
+    if now is None:
+        now = time.monotonic()
+    node.last_scan_mono = now
+    node.last_odom_mono = now
+    node.last_status_mono = now
+    node.last_obstacle_mono = now
+
+
 def test_bridge_realignment_hysteresis(ros):
     node = Esp32BridgeNode(parameter_overrides=[
         rclpy.parameter.Parameter('mock_serial', value=True)])
+    _mark_bridge_fresh(node)
     node.rover_status = 1     # EXECUTING
     node.obstacle_state = 0   # CLEAR
     node.cmd_linear_x = 0.04  # advancing after passing obstacle
@@ -225,3 +234,146 @@ def test_bridge_realignment_hysteresis(ros):
     node.destroy_node()
 
 
+
+
+def test_bridge_safe_startup(ros):
+    # Recién arrancado (sin mission_tracker_node) el puente debe mandar STOP (3), nunca avanzar
+    node = Esp32BridgeNode(parameter_overrides=[
+        rclpy.parameter.Parameter('mock_serial', value=True)])
+    assert node.rover_status == 0
+    assert node._effective_drive_state() == 3
+    node.on_keepalive()
+    assert node.ser.writes[-1][1] == pack_packet2(3)
+    node.destroy_node()
+
+
+def test_decoder_native_0x06():
+    # El decodificador debe aceptar 0x06 sin parches y descartar el 0x77 heredado
+    f = pack_packet3(3, 0, 1, b'abc')
+    assert f[1] == 0x06
+    assert list(iter_frames(f + f)) == [f, f]
+    legacy = pack_packet3(3, 0, 1, b'abc', msg_id=0x77)
+    assert list(iter_frames(legacy)) == []
+
+
+def _compressor(goal_delay=0.1):
+    from roverto_autonomy.map_compressor_node import MapCompressorNode
+    node = MapCompressorNode()
+    node.goal_delay = goal_delay
+    node.sent = []
+    node.send_map = lambda reason: node.sent.append(reason)
+    return node
+
+
+def test_stop_mission_sends_map_once(ros):
+    stop = Float32MultiArray(data=[3.0, 0.0, 0.0])
+    # a) primero llega el comando y luego GOAL_REACHED
+    node = _compressor()
+    node.on_mission_cmd(stop)
+    node.on_status(UInt8(data=3))
+    _spin(node, 0.4)
+    assert node.sent == ['stop_mission']
+    node.destroy_node()
+    # b) primero llega GOAL_REACHED y luego el comando (se cancela el envío diferido)
+    node = _compressor()
+    node.on_status(UInt8(data=3))
+    node.on_mission_cmd(stop)
+    _spin(node, 0.4)
+    assert node.sent == ['stop_mission']
+    node.destroy_node()
+    # c) meta alcanzada sin DETENER MISIÓN: sigue enviando el mapa normalmente
+    node = _compressor()
+    node.on_status(UInt8(data=3))
+    _spin(node, 0.4)
+    assert node.sent == ['goal']
+    node.destroy_node()
+
+
+def test_bridge_in_place_turn_not_blocked(ros):
+    node = Esp32BridgeNode(parameter_overrides=[
+        rclpy.parameter.Parameter('mock_serial', value=True)])
+    _mark_bridge_fresh(node)
+    node.rover_status = 1
+    # Giro puro (lin=0) con pared lateral (4) o frente bloqueado (3): debe girar, no avanzar ni frenar
+    for obstacle in (0, 3, 4):
+        node.obstacle_state = obstacle
+        node.cmd_linear_x, node.cmd_angular_z = 0.0, -0.5
+        assert node._effective_drive_state() == 2   # derecha
+        node.cmd_angular_z = 0.5
+        assert node._effective_drive_state() == 1   # izquierda
+    # Velocidad cero (lin=0, ang=0): siempre frenar, con cualquier estado de obstáculo
+    node.cmd_angular_z = 0.0
+    for obstacle in (0, 3, 4):
+        node.obstacle_state = obstacle
+        assert node._effective_drive_state() == 3
+    # Avanzando (lin>0) el obstáculo manda como antes
+    node.cmd_linear_x = 0.04
+    node.obstacle_state = 4
+    assert node._effective_drive_state() == 4
+    node.obstacle_state = 1
+    assert node._effective_drive_state() == 1
+    node.destroy_node()
+
+
+def test_bridge_input_timeouts(ros):
+    node = Esp32BridgeNode(parameter_overrides=[
+        rclpy.parameter.Parameter('mock_serial', value=True)])
+    node.rover_status = 1
+    node.obstacle_state = 0
+    node.cmd_linear_x = 0.04
+    node.pi_velocity_mps = 0.04
+
+    for attr in ('last_scan_mono', 'last_odom_mono', 'last_status_mono', 'last_obstacle_mono'):
+        _mark_bridge_fresh(node)
+        assert node._effective_drive_state() == 0
+        setattr(node, attr, 0.0)
+        assert node._effective_drive_state() == 3
+        _mark_bridge_fresh(node)
+        setattr(node, attr, time.monotonic() - 2.0)
+        assert node._effective_drive_state() == 3
+
+    # /odom vencido fuerza velocidad 0.0 en 0x90 y /scan vencido limpia bit 0x02 de pi_flags
+    _mark_bridge_fresh(node)
+    node.last_odom_mono = time.monotonic() - 2.0
+    node.last_scan_mono = time.monotonic() - 2.0
+    node.on_pi_telemetry()
+    vel, _ct, _cp, _ram, flags = unpack_pi_telemetry(node.ser.writes[-1][1])
+    assert vel == pytest.approx(0.0)
+    assert (flags & 0x02) == 0
+
+    _mark_bridge_fresh(node)
+    assert node._effective_drive_state() == 0
+    ser = node.ser
+    node.destroy_node()
+    assert ser.writes[-1][1] == pack_packet2(3)
+
+
+def test_mission_sensor_timeout():
+    from roverto_autonomy.sim_esp32_emulator_node import (
+        EXECUTING, SimEsp32Emulator, STANDBY)
+    node = SimEsp32Emulator()
+    node.pose = (0.0, 0.0, 0.0)
+    # Sin mensajes recientes de /odom o /obstacle_state, ignora la orden de movimiento
+    node._apply_command(1, 2.0, 0.0)
+    assert node.status == STANDBY
+
+    # Activo con sensores frescos -> vence /odom -> baja a STANDBY
+    now = time.monotonic()
+    node.last_odom_mono = now
+    node.last_obstacle_mono = now
+    node._apply_command(1, 2.0, 0.0)
+    assert node.status == EXECUTING
+    node.last_odom_mono = now - 2.0
+    node.on_timer()
+    assert node.status == STANDBY
+
+    # Activo con sensores frescos -> vence /obstacle_state -> baja a STANDBY
+    now = time.monotonic()
+    node.last_odom_mono = now
+    node.last_obstacle_mono = now
+    node._apply_command(1, 2.0, 0.0)
+    assert node.status == EXECUTING
+    node.last_obstacle_mono = now - 2.0
+    node.on_timer()
+    assert node.status == STANDBY
+    node.destroy_node()

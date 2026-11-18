@@ -10,7 +10,7 @@ CLI:
     gs_map_decoder.py --bin frames.bin -o map.png   # concatenated Packet 3 frames
     gs_map_decoder.py --ros -o map.png              # subscribe to /compressed_map_chunk (ROS 2)
 
-Packet 3: <BBBBBB 0xAA 0x77 map_seq_id chunk_id total_chunks payload_len (<=198)
+Packet 3: <BBBBBB 0xAA 0x06 map_seq_id chunk_id total_chunks payload_len (<=198)
           + payload + XOR checksum (XOR of every preceding byte).
 Reassembled payload = zlib( <HHHhh width height resolution_mm origin_x_cm origin_y_cm
                             + 2-bit cells, row-major, 4 per byte, MSB first ).
@@ -27,7 +27,7 @@ import numpy as np
 
 log = logging.getLogger('gs_map_decoder')
 
-SYNC1, SYNC2 = 0xAA, 0x77
+SYNC1, SYNC2 = 0xAA, 0x06  # 0x06 MAP según docs/ICD.md
 HDR_FMT = '<BBBBBB'
 HDR_LEN = struct.calcsize(HDR_FMT)
 MAX_PAYLOAD = 198

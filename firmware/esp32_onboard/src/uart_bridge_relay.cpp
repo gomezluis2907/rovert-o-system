@@ -33,7 +33,7 @@ static constexpr size_t P3_MAX_FRAME   = 6 + P3_MAX_PAYLOAD + 1;  // 205 B
 static constexpr uint32_t LINK_TIMEOUT_MS = 2000;                 // > 2 s sin enlace -> STANDBY
 
 // Estado compartido con el resto del firmware (Drivetrain, sensores y Telecom)
-volatile uint8_t  bridge_obstacle_state  = 0;     // último estado de 0x66 (3=STOP si cae el enlace)
+volatile uint8_t  bridge_obstacle_state  = 3;     // arranca en STOP; luego lo actualiza 0x66 (3=STOP si cae el enlace)
 volatile uint32_t bridge_last_pi_ms      = 0;     // millis() de la última trama válida desde la Pi
 volatile uint32_t bridge_last_gs_ms      = 0;     // millis() del último comando/heartbeat desde GS
 volatile bool     bridge_link_lost       = false; // true si el enlace GS supera 2 s de inactividad
@@ -53,11 +53,24 @@ static uint8_t  map_q_len[MAP_QUEUE_SLOTS];
 static volatile size_t map_q_head = 0, map_q_tail = 0;
 static volatile uint32_t last_hp_tx_ms = 0;
 static volatile uint32_t radio_fail_start_ms = 0;  // 0 = enlace ESP-NOW sano; >0 = inicio de fallos de ACK
+static int16_t  last_cmd_seq = -1;
 
 static uint8_t xor8(const uint8_t *d, size_t n) {
     uint8_t x = 0;
     while (n--) x ^= *d++;
     return x;
+}
+
+static void trigger_link_lost() {
+    bridge_obstacle_state = 3;  // forzar STOP (STANDBY seguro)
+    if (!bridge_link_lost) {
+        bridge_link_lost = true;
+        // Notificar STOP (cmd_id=0) a la Raspberry Pi con un seq distinto al último comando GS
+        uint8_t stop_seq = (last_cmd_seq >= 0) ? (uint8_t)((last_cmd_seq + 128) & 0xFF) : 0xFF;
+        uint8_t f[13] = {SYNC, ID_CMD, stop_seq, 0};
+        f[12] = xor8(f, 12);
+        Serial1.write(f, sizeof(f));
+    }
 }
 
 // Hook general para Telecom: envía cualquier trama ICD (0x02..0x06) por ESP-NOW hacia ESP32-GS
@@ -84,12 +97,11 @@ static void enqueue_map_chunk(const uint8_t *frame, size_t len) {
 
 // Envía 0x01 COMMAND (13 B, <BBBBffB) hacia la Raspberry Pi con deduplicación por seq
 void bridge_send_command_to_pi(uint8_t seq, uint8_t cmd_id, float distance_m, float angle_deg) {
-    static int16_t last_seq = -1;
-    bridge_last_gs_ms   = millis();
+    bridge_last_gs_ms = millis();
+    if ((int16_t)seq == last_cmd_seq) return;
+    last_cmd_seq        = (int16_t)seq;
     radio_fail_start_ms = 0;
     bridge_link_lost    = false;
-    if ((int16_t)seq == last_seq) return;
-    last_seq = (int16_t)seq;
 
     bridge_last_cmd_id     = cmd_id;
     bridge_last_cmd_dist_m = distance_m;
@@ -117,14 +129,13 @@ void bridge_notify_radio_tx_status(bool ack_ok) {
     if (ack_ok) {
         bridge_last_gs_ms   = now;
         radio_fail_start_ms = 0;
-        bridge_link_lost    = false;
+        // No limpiar bridge_link_lost automáticamente: exige nuevo comando del operador
     } else {
         if (radio_fail_start_ms == 0) {
             radio_fail_start_ms = (now != 0) ? now : 1;
         }
         if ((uint32_t)(now - radio_fail_start_ms) > LINK_TIMEOUT_MS) {
-            bridge_link_lost      = true;
-            bridge_obstacle_state = 3;
+            trigger_link_lost();
         }
     }
 }
@@ -308,8 +319,7 @@ static void bridge_task(void *) {
         uint32_t now = millis();
         // Watchdog de enlace: solo se dispara si hay fallos continuos de radio durante > 2 s
         if (radio_fail_start_ms != 0 && (uint32_t)(now - radio_fail_start_ms) > LINK_TIMEOUT_MS) {
-            bridge_link_lost      = true;
-            bridge_obstacle_state = 3;  // forzar STOP (STANDBY seguro)
+            trigger_link_lost();
         }
 
         // Drenar 1 fragmento de mapa de baja prioridad si no hubo telemetría urgente en los últimos 5 ms

@@ -41,6 +41,7 @@ class SimEsp32Emulator(Node):
         self.yaw_tolerance = self.declare_parameter('yaw_tolerance_rad', 0.04).value
         self.pass_distance = self.declare_parameter('pass_distance', 0.35).value
         self.goal_hold_sec = self.declare_parameter('goal_hold_sec', 3.0).value
+        self.sensor_timeout = float(self.declare_parameter('sensor_timeout_sec', 1.0).value)
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.status_pub = self.create_publisher(UInt8, '/rover_status', 10)
@@ -52,6 +53,8 @@ class SimEsp32Emulator(Node):
 
         self.pose: Optional[tuple] = None  # (x, y, yaw)
         self.obstacle = CLEAR
+        self.last_odom_mono = 0.0
+        self.last_obstacle_mono = 0.0
         self.status = STANDBY
         self.target = 0.0
         self.start_pose = (0.0, 0.0, 0.0)
@@ -67,9 +70,20 @@ class SimEsp32Emulator(Node):
     def on_odom(self, msg: Odometry):
         p = msg.pose.pose
         self.pose = (p.position.x, p.position.y, yaw_from_quat(p.orientation))
+        self.last_odom_mono = time.monotonic()
 
     def on_obstacle(self, msg: UInt8):
         self.obstacle = msg.data
+        self.last_obstacle_mono = time.monotonic()
+
+    def _sensors_fresh(self) -> bool:
+        if self.sensor_timeout <= 0.0:
+            return True
+        now = time.monotonic()
+        return (
+            self.last_odom_mono > 0.0 and (now - self.last_odom_mono) <= self.sensor_timeout
+            and self.last_obstacle_mono > 0.0 and (now - self.last_obstacle_mono) <= self.sensor_timeout
+        )
 
     def _reset_to_standby(self, log_msg: str):
         self.status = STANDBY
@@ -102,8 +116,8 @@ class SimEsp32Emulator(Node):
         if cmd_id != CMD_MOVE or (distance_m <= 0.0 and abs(angle_deg) < 1e-3):
             self._reset_to_standby('STOP command received -> STANDBY')
             return
-        if self.pose is None:
-            self.get_logger().warn('No /odom yet; ignoring command')
+        if self.pose is None or not self._sensors_fresh():
+            self.get_logger().warn('Sensors missing/stale (/odom or /obstacle_state); ignoring command')
             return
 
         target_yaw = wrap_angle(self.pose[2] + math.radians(float(angle_deg)))
@@ -154,6 +168,9 @@ class SimEsp32Emulator(Node):
             return
         if self.status == STANDBY or self.pose is None:
             self._publish(0.0, 0.0)
+            return
+        if not self._sensors_fresh():
+            self._reset_to_standby('Sensor timeout (/odom or /obstacle_state) -> STANDBY')
             return
 
         x, y, yaw = self.pose

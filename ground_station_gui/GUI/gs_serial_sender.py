@@ -1,3 +1,4 @@
+import random
 import struct
 import serial
 
@@ -13,7 +14,7 @@ CMD_STOP_MISSION = 3
 
 class GroundStationSerial:
     def __init__(self, port="/dev/ttyUSB0", baudrate=115200):
-        self.seq = 0
+        self.seq = random.randrange(256)  # evita repetir seq=0 al reiniciar la GUI
         self.link_lost = False
         # Abre el puerto; si no hay ESP32 queda en modo prueba en seco
         try:

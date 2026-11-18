@@ -1,6 +1,6 @@
 """ESP32 UART bridge (see docs/ICD.md):
   ESP32 -> Pi: 0x55 ENCODERS (12 B), 0x01 COMMAND (13 B, or legacy 0x88 8 B)
-  Pi -> ESP32: 0x66 DRIVE_STATE (4 B), 0x90 PI_TELEMETRY (10 B), 0x06 MAP (<=205 B)
+  Pi -> ESP32: 0x66 DRIVE_STATE (4 B), 0x90 PI_TELEMETRY (12 B), 0x06 MAP (<=205 B)
 """
 from collections import deque
 import math
@@ -142,13 +142,14 @@ class Esp32BridgeNode(Node):
         # Disabled by default because laser_odom_node publishes /odom and odom -> base_footprint TF
         self.publish_odom = self.declare_parameter('publish_odom', False).value
         self.publish_tf = self.declare_parameter('publish_tf', False).value
+        self.input_timeout = float(self.declare_parameter('input_timeout_sec', 1.0).value)
 
         self.odom_calc = DiffDriveOdometry(self.tpm, self.sep)
         self.parser = Packet1Parser()
         self.prev_ticks = None
         self.last_stamp = None
         self.obstacle_state = 0
-        self.rover_status = None
+        self.rover_status = 0  # STANDBY hasta que mission_tracker_node publique otro estado
         self.cmd_linear_x = 0.0
         self.cmd_angular_z = 0.0
         self._realign_dir = 0
@@ -158,6 +159,10 @@ class Esp32BridgeNode(Node):
         self.ram_mb = _read_ram_mb()
         self._prev_cpu = _read_proc_stat()
         self.last_scan_mono = 0.0
+        self.last_odom_mono = 0.0
+        self.last_status_mono = 0.0
+        self.last_obstacle_mono = 0.0
+        self._stale_warned = False
         self.map_queue = deque(maxlen=4000)
         self.ser = None
         self._open_serial()
@@ -259,6 +264,7 @@ class Esp32BridgeNode(Node):
         d, dth = self.odom_calc.update(dl, dr)
         v, w = (d / dt, dth / dt) if dt > 1e-6 else (0.0, 0.0)
         if self.publish_odom:
+            self.last_odom_mono = time.monotonic()
             self.pi_velocity_mps = float(v)
         self._publish_odom(now, v, w)
 
@@ -297,7 +303,22 @@ class Esp32BridgeNode(Node):
             self.tf_broadcaster.sendTransform(t)
 
     # ---- ROS -> ESP32 ------------------------------------------------------------------
+    def _stale_inputs(self, now: float = None) -> list:
+        """Return names of required ROS topics that have not arrived within input_timeout."""
+        if self.input_timeout <= 0.0:
+            return []
+        if now is None:
+            now = time.monotonic()
+        checks = (
+            ('/scan', self.last_scan_mono),
+            ('/odom', self.last_odom_mono),
+            ('/rover_status', self.last_status_mono),
+            ('/obstacle_state', self.last_obstacle_mono),
+        )
+        return [name for name, ts in checks if ts == 0.0 or (now - ts) > self.input_timeout]
+
     def on_odom(self, msg: Odometry):
+        self.last_odom_mono = time.monotonic()
         self.pi_velocity_mps = float(msg.twist.twist.linear.x)
 
     def on_scan(self, _msg: LaserScan):
@@ -312,21 +333,30 @@ class Esp32BridgeNode(Node):
             self._write(pack_packet2(curr))
 
     def _effective_drive_state(self) -> int:
-        """Send STOP (3) when STANDBY (0) or GOAL_REACHED (3); forward turn state (1/2)
-        for in-place angle_deg turns and post-obstacle heading realignment while CLEAR."""
+        """Send STOP (3) when STANDBY (0), GOAL_REACHED (3), or any required input is stale;
+        forward turn state (1/2) for in-place angle_deg turns and post-obstacle realignment."""
         if self.rover_status in (0, 3):
             self._realign_dir = 0
             return 3
-        if self.obstacle_state != 0:
+        stale = self._stale_inputs()
+        if stale:
             self._realign_dir = 0
-            return self.obstacle_state
+            if not self._stale_warned:
+                self.get_logger().warn(f'Stale ROS inputs ({", ".join(stale)}) — forcing STOP (3)')
+                self._stale_warned = True
+            return 3
+        self._stale_warned = False
         if abs(self.cmd_linear_x) < 1e-4:
+            # Giro en sitio: tiene prioridad sobre el obstáculo (4=HOLD_HEADING avanzaría recto)
             self._realign_dir = 0
             if self.cmd_angular_z > 0.05:
                 return 1  # turn left (CCW)
             if self.cmd_angular_z < -0.05:
                 return 2  # turn right (CW)
-            return 0
+            return 3  # el rastreador pide velocidad cero: frenar (nunca avanzar por un 0 transitorio)
+        if self.obstacle_state != 0:
+            self._realign_dir = 0
+            return self.obstacle_state
         # Post-obstacle heading realignment with hysteresis (enter >= ~7.6 deg, exit <= ~2.3 deg)
         if self._realign_dir == 0:
             if self.cmd_angular_z >= 0.20:
@@ -339,6 +369,7 @@ class Esp32BridgeNode(Node):
 
     def on_rover_status(self, msg: UInt8):
         prev = self._effective_drive_state()
+        self.last_status_mono = time.monotonic()
         self.rover_status = msg.data
         curr = self._effective_drive_state()
         if curr != prev:
@@ -346,6 +377,7 @@ class Esp32BridgeNode(Node):
 
     def on_obstacle(self, msg: UInt8):
         prev = self._effective_drive_state()
+        self.last_obstacle_mono = time.monotonic()
         self.obstacle_state = msg.data
         curr = self._effective_drive_state()
         if curr != prev:
@@ -366,10 +398,21 @@ class Esp32BridgeNode(Node):
         self._prev_cpu = curr
 
     def on_pi_telemetry(self):
-        lidar_ok = (time.monotonic() - self.last_scan_mono) <= 1.0 if self.last_scan_mono > 0 else False
+        now = time.monotonic()
+        if self.input_timeout <= 0.0:
+            lidar_ok = self.last_scan_mono > 0.0
+            odom_ok = self.last_odom_mono > 0.0
+        else:
+            lidar_ok = (self.last_scan_mono > 0.0) and ((now - self.last_scan_mono) <= self.input_timeout)
+            odom_ok = (self.last_odom_mono > 0.0) and ((now - self.last_odom_mono) <= self.input_timeout)
+        vel = self.pi_velocity_mps if odom_ok else 0.0
         pi_flags = 0x01 | (0x02 if lidar_ok else 0x00)
         self._write(pack_pi_telemetry(
-            self.pi_velocity_mps, self.cpu_temp_c, self.cpu_pct, self.ram_mb, pi_flags))
+            vel, self.cpu_temp_c, self.cpu_pct, self.ram_mb, pi_flags))
+
+    def destroy_node(self):
+        self._write(pack_packet2(3))
+        return super().destroy_node()
 
     def on_chunk(self, msg: ByteMultiArray):
         frame = msg_data_to_bytes(msg.data)

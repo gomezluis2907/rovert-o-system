@@ -52,27 +52,13 @@ python3 ~/rovert-o-system/ground_station_gui/gs_map_decoder.py --ros -o /tmp/map
 * **No cierres esta terminal.** Cuando llegue el mapa, se guardará en `/tmp/mapa.png`.
 
 ### Opción B: Ver el mapa en vivo dentro de la Interfaz Gráfica (GUI)
-Si quieres usar la ventana de la Estación Terrena (`main.py`) conectada a la simulación:
-
-1. En la **Terminal 2** (puente virtual ROS 2 $\leftrightarrow$ Serial):
-   ```bash
-   cd ~/rovert-o-system/roverto_ws
-   source /opt/ros/jazzy/setup.bash
-   source install/setup.bash
-   python3 /tmp/sim_gui_bridge.py
-   ```
-2. En una **Terminal 3** (Interfaz Gráfica):
-   ```bash
-   cd ~/rovert-o-system
-   GS_PORT=/tmp/virtual_esp32_gs python3 ground_station_gui/GUI/main.py
-   ```
+Esta opción todavía no está disponible. El repositorio no incluye el puente virtual que conecta ROS 2 con el puerto serial de la GUI (`/tmp/virtual_esp32_gs`). La Opción A cubre la simulación completa mientras tanto.
 
 ---
 
 ## 3. Ordenar al Rover que Avance (5 metros)
 
-* **Si usaste la Opción B (GUI):** Escribe `5.0` en el campo **Distancia [m]** de la ventana y haz clic en **Enviar**.
-* **Si usaste la Opción A (Sin GUI):** Abre una **Terminal 3** y ejecuta:
+Abre una **Terminal 3** y ejecuta:
 
 ```bash
 cd ~/rovert-o-system/roverto_ws
