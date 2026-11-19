@@ -640,3 +640,33 @@ def test_upside_down_lidar_roll_pi(ros):
     rel_angles = np.arctan2(pts[:, 1] - odom.ly, pts[:, 0] - odom.lx)
     assert np.all(np.diff(rel_angles) > 0.0)
     odom.destroy_node()
+
+
+def test_bridge_mirrored_esp32_telemetry(ros):
+    import struct
+    from roverto_autonomy.protocol import NAV_FMT, POWER_FMT, THERMAL_FMT
+
+    node = Esp32BridgeNode(parameter_overrides=[
+        rclpy.parameter.Parameter('mock_serial', value=True)])
+    imu_rx, pwr_rx, thm_rx = [], [], []
+    helper = rclpy.create_node('tel_mirror_helper')
+    helper.create_subscription(Float32MultiArray, '/rover/imu', lambda m: imu_rx.append(list(m.data)), 10)
+    helper.create_subscription(Float32MultiArray, '/rover/power', lambda m: pwr_rx.append(list(m.data)), 10)
+    helper.create_subscription(Float32MultiArray, '/rover/thermal', lambda m: thm_rx.append(list(m.data)), 10)
+
+    def _mk(fmt, *vals):
+        b = struct.pack(fmt[:-1], *vals)
+        return b + bytes([xor_checksum(b)])
+
+    node.ser.inject(_mk(NAV_FMT, 0xAA, 0x02, 1, 1000, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.04))
+    node.ser.inject(_mk(POWER_FMT, 0xAA, 0x03, 1, 1000, 12.25, 0.90, 0))
+    node.ser.inject(_mk(THERMAL_FMT, 0xAA, 0x04, 1, 1000, 27.5, 25.0, 26.5, 0))
+    for _ in range(20):
+        _spin(node, 0.01)
+        rclpy.spin_once(helper, timeout_sec=0.0)
+
+    assert len(imu_rx) == 1 and imu_rx[0][0] == pytest.approx(1.0) and imu_rx[0][6] == pytest.approx(0.04)
+    assert len(pwr_rx) == 1 and pwr_rx[0][0] == pytest.approx(12.25) and pwr_rx[0][1] == pytest.approx(0.90)
+    assert len(thm_rx) == 1 and thm_rx[0][0] == pytest.approx(27.5) and thm_rx[0][2] == pytest.approx(26.5)
+    helper.destroy_node()
+    node.destroy_node()

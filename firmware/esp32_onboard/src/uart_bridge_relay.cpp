@@ -313,6 +313,7 @@ void bridge_send_nav(float yaw, float pitch, float roll,
     last_hp_tx_ms  = ts;
     last_nav_tx_ms = ts;
     telecom_send_frame(f, sizeof(f));
+    Serial1.write(f, sizeof(f));  // espejo hacia Raspberry Pi para registro local (RV-SW05)
 }
 
 // 0x03 POWER (17 B, <BBBIffBB) hacia Estación Terrena (1 Hz, alta prioridad)
@@ -327,6 +328,7 @@ void bridge_send_power(float voltage_v, float current_a, uint8_t power_flags) {
     f[16] = xor8(f, 16);
     last_hp_tx_ms = ts;
     telecom_send_frame(f, sizeof(f));
+    Serial1.write(f, sizeof(f));  // espejo hacia Raspberry Pi para registro local (RV-SW05)
 }
 
 // 0x04 THERMAL (21 B, <BBBIfffBB) hacia Estación Terrena (0.1 Hz, alta prioridad)
@@ -343,6 +345,7 @@ void bridge_send_thermal(float temp_battery_c, float temp_pcb_c, float temp_lida
     f[20] = xor8(f, 20);
     last_hp_tx_ms = ts;
     telecom_send_frame(f, sizeof(f));
+    Serial1.write(f, sizeof(f));  // espejo hacia Raspberry Pi para registro local (RV-SW05)
 }
 
 // 0x05 HEALTH (15 B, <BBBIBBBBHBB) hacia Estación Terrena (0.5 Hz, alta prioridad)

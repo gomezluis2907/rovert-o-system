@@ -18,8 +18,8 @@ from tf2_ros import TransformBroadcaster
 
 from roverto_autonomy.calibration import load_calibration
 from roverto_autonomy.protocol import (
-    CMD_MOVE, msg_data_to_bytes, pack_packet2, pack_pi_telemetry,
-    Packet1Parser, unpack_packet3)
+    CMD_MOVE, msg_data_to_bytes, NAV_ID, pack_packet2, pack_pi_telemetry,
+    Packet1Parser, POWER_ID, THERMAL_ID, unpack_packet3)
 
 try:
     import serial  # pyserial (apt: python3-serial)
@@ -171,6 +171,9 @@ class Esp32BridgeNode(Node):
         self.status_pub = self.create_publisher(UInt8, '/rover_status', 10)
         self.cmd_pub = self.create_publisher(Float32, '/gs_command', 10)
         self.mission_cmd_pub = self.create_publisher(Float32MultiArray, '/mission_command', 10)
+        self.imu_pub = self.create_publisher(Float32MultiArray, '/rover/imu', 10)
+        self.power_pub = self.create_publisher(Float32MultiArray, '/rover/power', 10)
+        self.thermal_pub = self.create_publisher(Float32MultiArray, '/rover/thermal', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
         self.create_subscription(UInt8, '/obstacle_state', self.on_obstacle, 10)
         self.create_subscription(UInt8, '/rover_status', self.on_rover_status, 10)
@@ -242,6 +245,15 @@ class Esp32BridgeNode(Node):
             mcmd = Float32MultiArray()
             mcmd.data = [float(cmd_id), float(dist), float(angle)]
             self.mission_cmd_pub.publish(mcmd)
+        for pkt_id, vals in self.parser.pop_telemetry():
+            tmsg = Float32MultiArray()
+            tmsg.data = [float(v) for v in vals]
+            if pkt_id == NAV_ID:
+                self.imu_pub.publish(tmsg)
+            elif pkt_id == POWER_ID:
+                self.power_pub.publish(tmsg)
+            elif pkt_id == THERMAL_ID:
+                self.thermal_pub.publish(tmsg)
 
     def handle_packet1(self, left: int, right: int, status: int):
         now = self.get_clock().now()

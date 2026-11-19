@@ -149,20 +149,37 @@ def unpack_pi_telemetry(frame: bytes) -> Optional[Tuple[float, int, int, int, in
     return vel, cpu_t, cpu_p, ram_mb, flags
 
 
+NAV_ID = 0x02
+NAV_FMT = '<BBBIfffffffB'      # 36 B: sync, id, seq, ts_ms, yaw, pitch, roll, ax, ay, az, vel, xor
+NAV_LEN = struct.calcsize(NAV_FMT)
+
+POWER_ID = 0x03
+POWER_FMT = '<BBBIffBB'        # 17 B: sync, id, seq, ts_ms, voltage_v, current_a, flags, xor
+POWER_LEN = struct.calcsize(POWER_FMT)
+
+THERMAL_ID = 0x04
+THERMAL_FMT = '<BBBIfffBB'     # 21 B: sync, id, seq, ts_ms, t_bat, t_pcb, t_lidar, flags, xor
+THERMAL_LEN = struct.calcsize(THERMAL_FMT)
+
+
 class Packet1Parser:
-    """Non-blocking byte-wise state machine: parses 0x55 (ENCODERS) and 0x01/0x88 (COMMAND),
-    deduplicates repeated 0x01 command sequence numbers, and skips unknown packet IDs."""
+    """Non-blocking byte-wise state machine: parses 0x55 (ENCODERS), 0x01/0x88 (COMMAND),
+    and mirrored ESP32 telemetry 0x02 (NAV), 0x03 (POWER), 0x04 (THERMAL)."""
 
     _FRAME_LENS = {
         P1_ID: P1_LEN,
         P4_ID: P4_LEN,
         P4_LEGACY_ID: P4_LEGACY_LEN,
+        NAV_ID: NAV_LEN,
+        POWER_ID: POWER_LEN,
+        THERMAL_ID: THERMAL_LEN,
     }
 
     def __init__(self):
         self._buf = bytearray()
         self.bad_checksums = 0
         self.commands: List[Tuple[int, float, float, int]] = []
+        self.telemetry: List[Tuple[int, tuple]] = []
         self._last_cmd_seq: Optional[int] = None
 
     def pop_commands(self) -> List[Tuple[int, float, float]]:
@@ -170,6 +187,12 @@ class Packet1Parser:
         cmds = [(cmd_id, dist, angle) for cmd_id, dist, angle, _ in self.commands]
         self.commands.clear()
         return cmds
+
+    def pop_telemetry(self) -> List[Tuple[int, tuple]]:
+        """Return and clear parsed (pkt_id, values) tuples for 0x02 NAV, 0x03 POWER, 0x04 THERMAL."""
+        items = list(self.telemetry)
+        self.telemetry.clear()
+        return items
 
     def feed(self, data: bytes) -> List[Tuple[int, int, int]]:
         """Consume bytes; return list of (left_ticks, right_ticks, status) for valid Packet 1s."""
@@ -204,9 +227,18 @@ class Packet1Parser:
                         if self._last_cmd_seq != seq:
                             self._last_cmd_seq = seq
                             self.commands.append((cmd_id, dist, angle, seq))
-                    else:
+                    elif pkt_id == P4_LEGACY_ID:
                         _, _, cmd_id, dist, _ = struct.unpack(P4_LEGACY_FMT, frame)
                         self.commands.append((cmd_id, dist, 0.0, 0))
+                    elif pkt_id == NAV_ID:
+                        _, _, _seq, _ts, yaw, pitch, roll, ax, ay, az, vel, _ = struct.unpack(NAV_FMT, frame)
+                        self.telemetry.append((NAV_ID, (yaw, pitch, roll, ax, ay, az, vel)))
+                    elif pkt_id == POWER_ID:
+                        _, _, _seq, _ts, voltage_v, current_a, flags, _ = struct.unpack(POWER_FMT, frame)
+                        self.telemetry.append((POWER_ID, (voltage_v, current_a, float(flags))))
+                    elif pkt_id == THERMAL_ID:
+                        _, _, _seq, _ts, t_bat, t_pcb, t_lidar, flags, _ = struct.unpack(THERMAL_FMT, frame)
+                        self.telemetry.append((THERMAL_ID, (t_bat, t_pcb, t_lidar, float(flags))))
                 else:
                     self.bad_checksums += 1
                     # A real sync pair may hide inside the rejected bytes; resync from them.
