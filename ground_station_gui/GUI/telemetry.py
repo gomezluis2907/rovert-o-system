@@ -23,17 +23,41 @@ class Channel:
     unit: str
     color: str
     setpoint: bool = False  # True: valor escrito por el operador, no medido
+    normal: tuple = None    # rango "Normal" de la pestana Parametros (min, max); None = sin definir
 
 
+# Mismas variables y unidades que la pestana "Parametros" (orden: por grupo de la pestana).
 CHANNELS = (
+    # temperaturas (DS18B20 del rover y CPU de la Raspberry)
     Channel("temp_ambiente", "Temperatura ambiente", "Temp. ambiente", "Temp. ambiente", "°C", "#2563eb"),
-    Channel("temp_bateria", "Temperatura de batería", "Temp. batería", "Temp. batería", "°C", "#06b6d4"),
+    Channel("temp_bateria", "Temperatura de batería", "Temp. batería", "Temp. batería", "°C", "#06b6d4", normal=(5, 30)),
+    Channel("temp_lidar", "Temperatura del LiDAR", "Temp. LiDAR", "Temp. LiDAR", "°C", "#f97316"),
+    Channel("temp_rasp", "Temperatura de la Raspberry Pi", "Temp. Raspberry", "Temp. Raspberry", "°C", "#e11d48", normal=(20, 70)),
+    # bateria (INA226)
+    Channel("voltaje", "Voltaje de batería", "Voltaje", "Voltaje", "V", "#ca8a04"),
+    Channel("corriente", "Corriente de batería", "Corriente", "Corriente", "A", "#dc2626"),
+    # Raspberry Pi
+    Channel("cpu", "Uso de CPU de la Raspberry Pi", "CPU", "CPU", "%", "#7c3aed", normal=(0, 70)),
+    Channel("ram", "RAM usada de la Raspberry Pi", "RAM", "RAM", "MB", "#db2777", normal=(1250, 3000)),
+    # movimiento (odometria y BNO085)
+    Channel("velocidad", "Velocidad", "Velocidad", "Velocidad", "m/s", "#10b981"),
+    Channel("acel_x", "Aceleración lineal X", "Acel. X", "Aceleración X", "m/s²", "#0ea5e9"),
+    Channel("acel_y", "Aceleración lineal Y", "Acel. Y", "Aceleración Y", "m/s²", "#14b8a6"),
+    Channel("acel_z", "Aceleración lineal Z", "Acel. Z", "Aceleración Z", "m/s²", "#84cc16"),
+    # consignas escritas por el operador
     Channel("distancia", "Distancia (consigna)", "Distancia", "Distancia", "m", "#6366f1", True),
     Channel("direccion", "Dirección (consigna)", "Dirección", "Dirección", "°", "#8b5cf6", True),
-    Channel("velocidad", "Velocidad", "Velocidad", "Velocidad", "m/s", "#10b981"),
-    Channel("acel_x", "Aceleración angular X", "Acel. X", "Aceleración X", "rad/s²", "#0ea5e9"),
-    Channel("acel_y", "Aceleración angular Y", "Acel. Y", "Aceleración Y", "rad/s²", "#14b8a6"),
-    Channel("acel_z", "Aceleración angular Z", "Acel. Z", "Aceleración Z", "rad/s²", "#84cc16"),
+)
+INDEX = {ch.key: i for i, ch in enumerate(CHANNELS)}  # clave -> posicion en CHANNELS
+
+# Grupos para graficar (pestana "Graficas" y hoja "Graficas" del Excel): (titulo, claves)
+GROUPS = (
+    ("Temperaturas", ("temp_ambiente", "temp_bateria", "temp_lidar", "temp_rasp")),
+    ("Batería: voltaje y corriente", ("voltaje", "corriente")),
+    ("Raspberry Pi: CPU y RAM", ("cpu", "ram")),
+    ("Velocidad", ("velocidad",)),
+    ("Aceleración lineal", ("acel_x", "acel_y", "acel_z")),
+    ("Distancia y dirección (consignas)", ("distancia", "direccion")),
 )
 
 
@@ -58,8 +82,12 @@ class SensorHub:
         if parameters is None:
             return
         rover, mapp, ins = parameters.rover_params, parameters.map_params, parameters.instructions
+        rasp, power = parameters.rasp_params, parameters.map
         sources = {
             "temp_ambiente": rover.val_env_temp, "temp_bateria": rover.val_bat_temp,
+            "temp_lidar": rover.val_lidar_temp, "temp_rasp": rasp.val_temp,
+            "voltaje": power.val_voltage, "corriente": power.val_current,
+            "cpu": rasp.val_cpu, "ram": rasp.val_ram,
             "velocidad": mapp.val_speed, "acel_x": mapp.val_angular_ac_x,
             "acel_y": mapp.val_angular_ac_y, "acel_z": mapp.val_angular_ac_z,
         }
