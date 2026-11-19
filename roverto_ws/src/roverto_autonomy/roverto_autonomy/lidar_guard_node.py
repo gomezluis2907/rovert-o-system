@@ -33,6 +33,10 @@ class LidarGuardNode(Node):
     def __init__(self):
         super().__init__('lidar_guard_node')
         cal = load_calibration()
+        lidar_rpy = cal.get('lidar_rpy', [0.0, 0.0, 0.0])
+        self.lidar_roll = float(lidar_rpy[0])
+        self.lidar_yaw = float(lidar_rpy[2])
+        self.upside_down = abs(math.atan2(math.sin(self.lidar_roll), math.cos(self.lidar_roll))) > (0.5 * math.pi)
         self.front_stop = self.declare_parameter(
             'front_stop_distance', float(cal['front_stop_distance'])).value
         self.flank_safe = self.declare_parameter(
@@ -65,7 +69,10 @@ class LidarGuardNode(Node):
             self._clear_since = None
             return STOP
         raw = msg.angle_min + np.arange(n) * msg.angle_increment
-        angles = np.arctan2(np.sin(raw), np.cos(raw))  # [-pi, pi], 0 = +X, + = left
+        if self.upside_down:
+            raw = -raw
+        raw = raw + self.lidar_yaw
+        angles = np.arctan2(np.sin(raw), np.cos(raw))  # [-pi, pi], 0 = +X, + = left in base_link
         ranges = np.asarray(msg.ranges, dtype=np.float64)
         in_fov = np.abs(angles) <= REAR_CROP
         in_front = (angles >= FRONT[0]) & (angles <= FRONT[1])

@@ -610,3 +610,33 @@ def test_new2_laser_odom_angle_sorting_0_to_2pi(ros):
     # Los ángulos deben quedar estrictamente ordenados de -135 deg a +135 deg (sin salto +135 -> -135)
     assert np.all(np.diff(rel_angles) > 0.0)
     node.destroy_node()
+
+
+def test_upside_down_lidar_roll_pi(ros):
+    import math
+    from sensor_msgs.msg import LaserScan
+    from roverto_autonomy.lidar_guard_node import AVOID_LEFT, LidarGuardNode
+    from roverto_autonomy.laser_odom_node import LaserOdomNode
+
+    guard = LidarGuardNode()
+    assert guard.upside_down is True
+
+    # Con Roll=180 deg, un obstáculo a +45 deg en laser_frame está a -45 deg (DERECHA) en el rover
+    # y un obstáculo frontal (0 deg) con lado derecho bloqueado -> debe esquivar a la IZQUIERDA (AVOID_LEFT=1)
+    scan = LaserScan()
+    scan.angle_min = -math.pi
+    scan.angle_increment = 2.0 * math.pi / 360.0
+    scan.range_min = 0.02
+    scan.range_max = 12.0
+    scan.ranges = [2.0] * 360
+    scan.ranges[180] = 0.25          # frente (0 deg)
+    scan.ranges[180 + 45] = 0.20     # +45 deg en laser_frame = -45 deg (derecha) en base_link
+    assert guard.classify(scan) == AVOID_LEFT
+    guard.destroy_node()
+
+    odom = LaserOdomNode()
+    assert odom.upside_down is True
+    pts = odom._scan_to_points(scan)
+    rel_angles = np.arctan2(pts[:, 1] - odom.ly, pts[:, 0] - odom.lx)
+    assert np.all(np.diff(rel_angles) > 0.0)
+    odom.destroy_node()

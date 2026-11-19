@@ -25,7 +25,7 @@
     <param name="port_name" value="$(var lidar_port)"/>
     <param name="port_baudrate" value="230400"/>
     <param name="laser_scan_dir" value="true"/>
-    <param name="enable_angle_crop_func" value="true"/>
+    <param name="enable_angle_crop_func" value="false"/>
     <param name="angle_crop_min" value="135.0"/>
     <param name="angle_crop_max" value="225.0"/>
   </node>

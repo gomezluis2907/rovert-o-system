@@ -65,8 +65,12 @@ class LaserOdomNode(Node):
         super().__init__('laser_odom_node')
         cal = load_calibration()
         lidar_xyz = cal.get('lidar_xyz', [0.125, 0.0, 0.08])
+        lidar_rpy = cal.get('lidar_rpy', [0.0, 0.0, 0.0])
         self.lx = float(lidar_xyz[0])
         self.ly = float(lidar_xyz[1])
+        self.lidar_roll = float(lidar_rpy[0])
+        self.lidar_yaw = float(lidar_rpy[2])
+        self.upside_down = abs(math.atan2(math.sin(self.lidar_roll), math.cos(self.lidar_roll))) > (0.5 * math.pi)
         self.min_range = self.declare_parameter('min_valid_range', 0.12).value
         self.max_step_xy = self.declare_parameter('max_step_xy', 0.15).value
         self.max_step_yaw = self.declare_parameter('max_step_yaw', 0.35).value
@@ -100,6 +104,9 @@ class LaserOdomNode(Node):
         if n == 0:
             return np.empty((0, 2))
         raw = msg.angle_min + np.arange(n) * msg.angle_increment
+        if self.upside_down:
+            raw = -raw
+        raw = raw + self.lidar_yaw
         angles = np.arctan2(np.sin(raw), np.cos(raw))
         ranges = np.asarray(msg.ranges, dtype=np.float64)
         r_min = max(float(msg.range_min), self.min_range)
