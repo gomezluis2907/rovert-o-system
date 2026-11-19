@@ -5,9 +5,9 @@
 // CONFIGURACIÓN ESP32 GROUND STATION
 // ======================================
 
-// MAC Wi-Fi STA real de la ESP32-Onboard (Rover) entregada por Telecomunicaciones.
+// MAC Wi-Fi STA real de la ESP32-Onboard (DEVKIT V1) del rover.
 static const uint8_t ROVER_MAC[6] = {
-    0x58, 0x2A, 0xBD, 0x71, 0xE5, 0xE4
+    0x28, 0x05, 0xA5, 0x30, 0xE7, 0xA8
 };
 
 // Ambos nodos ESP-NOW DEBEN usar el mismo canal.
