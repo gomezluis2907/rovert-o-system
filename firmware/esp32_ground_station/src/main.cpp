@@ -1,209 +1,193 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
-#include <esp_timer.h>
-#include <soc/soc.h>
-#include <soc/rtc_cntl_reg.h>
+#include <esp_wifi.h>
+#include <esp_idf_version.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
-// Dirección MAC de ESP32-GS
-uint8_t macTerrena[] = {0x58, 0x2A, 0xBD, 0x71, 0xE5, 0xE4};
+#include "Config.h"
+#include "TelProtocol.h"
+#include "SerialFrameParser.h"
 
-#define TOTAL_FRAGMENTOS 50      // 50 fragmentos * 250 bytes = 12,500 bytes = 100,000 bits (100 Kbits)
-#define TAMANO_PAQUETE_BYTES 250 // Tamaño máximo de payload por paquete en ESP-NOW
+// Serial = canal binario Laptop (GUI/main.py) <-> ESP32 Ground Station.
+SerialFrameParser laptopParser;
 
-// Estructura para transportar fragmentos del sensor LIDAR en formato .CSV
-typedef struct __attribute__((packed)) {
-    uint8_t tipo_msg;          // 1 = Datos LIDAR CSV
-    uint16_t num_fragmento;    // Índice (1 a 50)
-    uint16_t total_fragmentos; // 50
-    uint32_t t_envio_us;       // Timestamp origen para medición de DELAY
-    char csv_payload[241];     // Filas de lecturas en formato .CSV
-} PaqueteLidar_t;
+struct RadioPacket {
+    uint16_t len;
+    uint8_t srcMac[6];
+    uint8_t data[250];
+};
 
-// Estructura de respuesta y control recibida desde la Terrena
-typedef struct __attribute__((packed)) {
-    uint8_t tipo_msg;             // 2 = Confirmación y comandos
-    uint8_t orden_cmd;            // Índice de instrucción (1 a 4)
-    uint32_t t_origen_us;         // Timestamp devuelto para calcular el RTT
-    uint32_t delay_rafaga_ms;     // Tiempo total de transferencia de los 100 Kbits
-    uint32_t bits_confirmados;    // Total de bits acumulados por la Terrena
-    char confirmacion_csv[64];    // Validación de la muestra CSV
-    char instruccion[16];         // "Subir", "Bajar", "Derecha", "Izquierda"
-} PaqueteControl_t;
+QueueHandle_t radioRxQueue = nullptr;
 
-PaqueteLidar_t txLidar;
-esp_now_peer_info_t peerInfo;
+uint32_t radioRxValid = 0;
+uint32_t radioRxInvalid = 0;
+uint32_t radioTxRequested = 0;
+uint32_t laptopRxValid = 0;
 
-// Callback de recepción compatible con ESP32 Arduino Core v2.x y v3.x
+static bool macEquals(const uint8_t *a, const uint8_t *b) {
+    return memcmp(a, b, 6) == 0;
+}
+
+static bool peerMacConfigured(const uint8_t *mac) {
+    for (int i = 0; i < 6; ++i) {
+        if (mac[i] != 0x00) return true;
+    }
+    return false;
+}
+
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
+void onEspNowReceive(const esp_now_recv_info_t *info,
+                     const uint8_t *data,
+                     int len) {
+    const uint8_t *srcMac = (info != nullptr) ? info->src_addr : nullptr;
 #else
-void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+void onEspNowReceive(const uint8_t *srcMac,
+                     const uint8_t *data,
+                     int len) {
 #endif
-    if (len == sizeof(PaqueteControl_t)) {
-        PaqueteControl_t rxCtrl;
-        memcpy(&rxCtrl, incomingData, sizeof(PaqueteControl_t));
+    if (srcMac == nullptr || data == nullptr || len <= 0 || len > 250) {
+        return;
+    }
 
-        uint32_t ahora_us = (uint32_t)esp_timer_get_time();
-        float delay_enlace_ms = (ahora_us - rxCtrl.t_origen_us) / 1000.0f;
+    RadioPacket packet{};
+    packet.len = static_cast<uint16_t>(len);
+    memcpy(packet.srcMac, srcMac, 6);
+    memcpy(packet.data, data, len);
 
-        if (rxCtrl.orden_cmd == 1) {
-            Serial.println("\n========================================================");
-            Serial.println("[RX_ROVER] CONFIRMACION RECIBIDA DE ESTACION TERRENA");
-            Serial.printf(" -> Bits confirmados : %lu bits (100 Kbits)\n", (unsigned long)rxCtrl.bits_confirmados);
-            Serial.printf(" -> Info validada    : %s\n", rxCtrl.confirmacion_csv);
-            Serial.printf(" -> DELAY de rafaga  : %lu ms (tiempo de transferencia de 100 Kbits)\n", (unsigned long)rxCtrl.delay_rafaga_ms);
-            Serial.printf(" -> DELAY de enlace  : %.2f ms (latencia de ida y vuelta / RTT)\n", delay_enlace_ms);
-            Serial.println("--------------------------------------------------------");
-            Serial.println("[RX_ROVER] EJECUTANDO SECUENCIA DE INSTRUCCIONES:");
-        }
-
-        Serial.printf(" [%u/4] Instruccion recibida: %-10s | DELAY enlace: %.2f ms\n",
-                      rxCtrl.orden_cmd, rxCtrl.instruccion, delay_enlace_ms);
-
-        if (rxCtrl.orden_cmd == 4) {
-            Serial.println("========================================================\n");
-        }
+    // Callback Wi-Fi: no hacer Serial.write() aquí.
+    if (radioRxQueue != nullptr) {
+        xQueueSend(radioRxQueue, &packet, 0);
     }
 }
 
-void enviarBloque100KbitsLidar() {
-    Serial.println("\n--- INICIANDO ENVIO LIDAR CSV (100,000 bits / 12,500 bytes) ---");
-    Serial.println("fragmento,punto_id,angulo_deg,distancia_mm,intensidad");
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+void onEspNowSent(const esp_now_send_info_t *info, esp_now_send_status_t status) {
+    (void)info;
+    (void)status;
+}
+#else
+void onEspNowSent(const uint8_t *macAddr, esp_now_send_status_t status) {
+    (void)macAddr;
+    (void)status;
+}
+#endif
 
-    uint32_t t_inicio_rafaga = (uint32_t)esp_timer_get_time();
-    uint16_t punto_id = 1;
+bool initEspNow() {
+    WiFi.mode(WIFI_STA);
+    delay(100);
 
-    for (uint16_t frag = 1; frag <= TOTAL_FRAGMENTOS; frag++) {
-        memset(&txLidar, 0, sizeof(PaqueteLidar_t));
-        txLidar.tipo_msg = 1;
-        txLidar.num_fragmento = frag;
-        txLidar.total_fragmentos = TOTAL_FRAGMENTOS;
-        txLidar.t_envio_us = (uint32_t)esp_timer_get_time();
+    if (esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+        return false;
+    }
 
-        // Rellenar los 241 bytes del payload con lecturas simuladas en formato .CSV
-        int offset = 0;
-        while (offset < (int)sizeof(txLidar.csv_payload) - 32) {
-            float angulo = (punto_id * 1.44f);
-            if (angulo >= 360.0f) angulo -= 360.0f;
-            uint16_t distancia_mm = 500 + (esp_random() % 3500); // 500 a 4000 mm
-            uint8_t intensidad = 50 + (esp_random() % 200);      // Reflectividad 50 a 250
+    if (esp_now_init() != ESP_OK) {
+        return false;
+    }
 
-            int escritos = snprintf(txLidar.csv_payload + offset,
-                                    sizeof(txLidar.csv_payload) - offset,
-                                    "%u,%.2f,%u,%u\n",
-                                    punto_id, angulo, distancia_mm, intensidad);
-            if (escritos < 0 || offset + escritos >= (int)sizeof(txLidar.csv_payload)) {
-                break;
+    esp_now_register_recv_cb(onEspNowReceive);
+    esp_now_register_send_cb(onEspNowSent);
+
+    if (!peerMacConfigured(ROVER_MAC)) {
+        return false;
+    }
+
+    esp_now_peer_info_t peer{};
+    memcpy(peer.peer_addr, ROVER_MAC, 6);
+    peer.channel = ESPNOW_WIFI_CHANNEL;
+    peer.ifidx = WIFI_IF_STA;
+    peer.encrypt = false;
+
+    if (!esp_now_is_peer_exist(ROVER_MAC)) {
+        if (esp_now_add_peer(&peer) != ESP_OK) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool sendCommandToRover(const uint8_t *frame, size_t len) {
+    if (!TelProtocol::validateFrame(frame, len)) {
+        return false;
+    }
+
+    if (frame[1] != TelProtocol::MSG_COMMAND) {
+        return false;
+    }
+
+    ++radioTxRequested;
+    return esp_now_send(ROVER_MAC, frame, len) == ESP_OK;
+}
+
+void processLaptopSerial() {
+    uint8_t completed[TelProtocol::MAX_FRAME_SIZE];
+    size_t completedLen = 0;
+
+    while (Serial.available() > 0) {
+        const uint8_t b = static_cast<uint8_t>(Serial.read());
+
+        if (laptopParser.feed(b, millis(), completed, completedLen)) {
+            ++laptopRxValid;
+
+            // Laptop -> Ground solo acepta 0x01 COMMAND (13 B) según docs/ICD.md.
+            if (completed[1] == TelProtocol::MSG_COMMAND) {
+                sendCommandToRover(completed, completedLen);
             }
-            offset += escritos;
-            punto_id++;
         }
-
-        // Relleno de seguridad con espacios para alcanzar exactamente 250 bytes
-        for (int i = offset; i < (int)sizeof(txLidar.csv_payload) - 1; i++) {
-            txLidar.csv_payload[i] = ' ';
-        }
-        txLidar.csv_payload[sizeof(txLidar.csv_payload) - 1] = '\0';
-
-        // Muestra representativa en consola (primer y último fragmento)
-        if (frag == 1 || frag == TOTAL_FRAGMENTOS) {
-            Serial.print(txLidar.csv_payload);
-        }
-
-        esp_now_send(macTerrena, (uint8_t *)&txLidar, sizeof(PaqueteLidar_t));
-        delay(4); // Pausa breve para no saturar la cola de transmisión Wi-Fi
     }
-
-    uint32_t t_fin_rafaga = (uint32_t)esp_timer_get_time();
-    Serial.printf("--- FIN DE ENVIO: %d paquetes (%d bits) enviados en %.2f ms ---\n",
-                  TOTAL_FRAGMENTOS, TOTAL_FRAGMENTOS * TAMANO_PAQUETE_BYTES * 8,
-                  (t_fin_rafaga - t_inicio_rafaga) / 1000.0f);
 }
 
-// Paquete 4: comando PC -> ESP32-GS (8 bytes, little-endian)
-typedef struct __attribute__((packed)) {
-    uint8_t header1;    // 0xAA
-    uint8_t header2;    // 0x88
-    uint8_t cmd_id;     // 1 = ENVIAR, 0 = DETENER
-    float distance_m;   // Distancia objetivo en metros
-    uint8_t checksum;   // XOR de los bytes 0 al 6
-} GsCommandPacket;
+void processRadioRx() {
+    RadioPacket packet{};
 
-// XOR de los primeros len bytes
-uint8_t compute_xor(const uint8_t *data, size_t len) {
-    uint8_t x = 0;
-    while (len--) x ^= *data++;
-    return x;
-}
-
-// Punto de integración: aquí el equipo de comunicaciones debe llamar esp_now_send()
-void enviar_comando_esp_now(const GsCommandPacket& pkt) {
-    // esp_now_send(macRover, (const uint8_t *)&pkt, sizeof(pkt));
-    Serial.printf("[GS] CMD=%u DIST=%.2f m\n", pkt.cmd_id, pkt.distance_m);
-}
-
-// Parser no bloqueante por máquina de estados; llamar en cada loop()
-void poll_pc_serial() {
-    static uint8_t buf[sizeof(GsCommandPacket)];
-    static uint8_t idx = 0;
-    while (Serial.available()) {
-        uint8_t b = Serial.read();
-        if (idx == 0 && b != 0xAA) continue;   // espera header1
-        if (idx == 1 && b != 0x88) {           // header2 inválido: resincroniza
-            idx = (b == 0xAA) ? 1 : 0;
+    while (xQueueReceive(radioRxQueue, &packet, 0) == pdTRUE) {
+        if (!macEquals(packet.srcMac, ROVER_MAC)) {
+            ++radioRxInvalid;
             continue;
         }
-        buf[idx++] = b;
-        if (idx == sizeof(buf)) {
-            idx = 0;
-            if (compute_xor(buf, sizeof(buf) - 1) == buf[sizeof(buf) - 1]) {
-                GsCommandPacket pkt;
-                memcpy(&pkt, buf, sizeof(pkt));
-                enviar_comando_esp_now(pkt);
-            }
+
+        if (!TelProtocol::validateFrame(packet.data, packet.len)) {
+            ++radioRxInvalid;
+            continue;
         }
+
+        // Rover -> Ground: 0x02 NAV, 0x03 POWER, 0x04 THERMAL, 0x05 HEALTH, 0x06 MAP.
+        if (!TelProtocol::isExternalTelemetry(packet.data[1])) {
+            ++radioRxInvalid;
+            continue;
+        }
+
+        ++radioRxValid;
+
+        // La laptop recibe exactamente la misma trama binaria del ICD.
+        Serial.write(packet.data, packet.len);
     }
 }
 
 void setup() {
-    WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Desactiva detector de brownout
-    Serial.begin(115200);
-    delay(1000);
+    // No imprimir texto en Serial: es el canal binario del ICD hacia GUI/main.py.
+    Serial.setRxBufferSize(1024);
+    Serial.begin(LAPTOP_SERIAL_BAUD);
+    delay(200);
 
-    WiFi.mode(WIFI_STA);
-    Serial.println();
-    Serial.println("=========================================");
-    Serial.print("[RX_ROVER] Iniciado. MAC Local Rover: ");
-    Serial.println(WiFi.macAddress());
-    Serial.print("[RX_ROVER] Peer Terrena configurado: ");
-    for (int i = 0; i < 6; i++) {
-        Serial.printf("%02X%s", macTerrena[i], (i < 5) ? ":" : "\n");
-    }
-    Serial.println("=========================================");
+    radioRxQueue = xQueueCreate(
+        RADIO_RX_QUEUE_DEPTH,
+        sizeof(RadioPacket)
+    );
 
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("[ERROR] No se pudo inicializar ESP-NOW");
-        return;
+    if (radioRxQueue == nullptr) {
+        while (true) delay(1000);
     }
 
-    esp_now_register_recv_cb(OnDataRecv);
-
-    memcpy(peerInfo.peer_addr, macTerrena, 6);
-    peerInfo.channel = 0;
-    peerInfo.encrypt = false;
-
-    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-        Serial.println("[ERROR] No se pudo emparejar con la Terrena");
-        return;
+    if (!initEspNow()) {
+        while (true) delay(1000);
     }
 }
 
 void loop() {
-    poll_pc_serial();
-    static uint32_t t_ultimo = 0;
-    if (millis() - t_ultimo >= 5000) { // Ráfaga cada 5 s sin bloquear
-        t_ultimo = millis();
-        enviarBloque100KbitsLidar();
-    }
+    processLaptopSerial();
+    processRadioRx();
+    delay(1);
 }

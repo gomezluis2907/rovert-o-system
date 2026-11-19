@@ -1,6 +1,7 @@
 #include <Arduino.h>
-#include "Motor.h"
+#include "motor.h"
 #include "Drivetrain.h"
+#include "rover_state_machine.h"
 
 // ---- [AJUSTAR] Pines según tu cableado y placa ----
 // Se selecciona automáticamente según el entorno elegido en platformio.ini:
@@ -30,10 +31,16 @@ void setup()
 {
     Serial.begin(115200);
     drive.begin();
-    drive.setCruiseSpeed(1.0f);        // [AJUSTAR] objetivo: 1 cm/s
+    drive.setCruiseSpeed(4.0f);        // objetivo nominal ICD: 4.0 cm/s (>= minSpeed 1.53 cm/s)
 
     Serial.println("Comandos: w=adelante s=atras a=izq d=der x=stop b=freno");
     Serial.println("          +/- = crucero ±0.5 cm/s   t = adelante 3 s");
     Serial.printf ("Velocidad minima alcanzable: %.2f cm/s\n", drive.minSpeed());
 }
 
+void loop()
+{
+    rover_state_machine_step();
+    drive.update();
+    delay(10);
+}

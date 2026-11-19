@@ -1,6 +1,11 @@
-// Máquina de estados reactiva para evasión de obstáculos (ver docs/ICD.md).
+// Máquina de estados reactiva para evasión de obstáculos (ver docs/ICD.md y docs/STATE_MACHINE.md).
 #include "rover_state_machine.h"
 #include <Arduino.h>
+
+#ifndef BRIDGE_HOST_TEST
+#include "Drivetrain.h"
+extern Drivetrain drive;
+#endif
 
 // Variables compartidas desde uart_bridge_relay.cpp
 extern volatile uint8_t  bridge_obstacle_state;
@@ -19,31 +24,41 @@ uint8_t rover_state_machine_step() {
     // Seguridad: detener si falla el enlace GS o el UART con la Raspberry Pi
     if (bridge_link_lost || pi_timeout) {
         current_state = ROVER_STANDBY;
-        // INSTRUCCIÓN PARA DETENER MOTORES
+#ifndef BRIDGE_HOST_TEST
+        drive.stop();
+#endif
         return current_state;
     }
 
     switch (bridge_obstacle_state) {
         case OBS_AVOID_LEFT:
             current_state = ROVER_AVOIDING;
-            // INSTRUCCIÓN PARA ROTAR A LA IZQUIERDA
+#ifndef BRIDGE_HOST_TEST
+            drive.turnLeft();
+#endif
             break;
 
         case OBS_AVOID_RIGHT:
             current_state = ROVER_AVOIDING;
-            // INSTRUCCIÓN PARA ROTAR A LA DERECHA
+#ifndef BRIDGE_HOST_TEST
+            drive.turnRight();
+#endif
             break;
 
         case OBS_CLEAR:
         case OBS_HOLD_HEADING:
             current_state = ROVER_EXECUTING;
-            // INSTRUCCIÓN PARA AVANZAR HACIA ADELANTE
+#ifndef BRIDGE_HOST_TEST
+            drive.forward();
+#endif
             break;
 
         case OBS_STOP:
         default:
             current_state = ROVER_STANDBY;
-            // INSTRUCCIÓN PARA DETENER MOTORES
+#ifndef BRIDGE_HOST_TEST
+            drive.stop();
+#endif
             break;
     }
 

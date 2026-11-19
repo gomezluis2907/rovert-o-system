@@ -1,48 +1,56 @@
-// Puente UART Pi <-> ESP32-Onboard y constructores ICD (ver docs/ICD.md).
-// Arranca solo (constructor + tarea FreeRTOS); no requiere cambios en main.cpp.
+// Puente integrado UART1 (Raspberry Pi <-> ESP32-Onboard) + ESP-NOW (ESP32-Onboard <-> ESP32-GS).
+// Arranca solo (constructor + tarea FreeRTOS en núcleo 1); no requiere tocar main.cpp.
 #include <Arduino.h>
 #include <math.h>
 #include <string.h>
+#include "Config.h"
+#include "TelProtocol.h"
+#include "SerialFrameParser.h"
+#include "uart_bridge_relay.h"
 
-// Pines UART hacia la Raspberry Pi (cambiar libremente)
-#if CONFIG_IDF_TARGET_ESP32S3
-#define UART_PI_RX 1
-#define UART_PI_TX 2
-#else
-#define UART_PI_RX 34
-#define UART_PI_TX 23
+#if defined(ARDUINO) && !defined(BRIDGE_HOST_TEST)
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <esp_idf_version.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #endif
-#define UART_PI_BAUD 115200
+
+// Pines UART1 hacia la Raspberry Pi (definidos en Config.h: RX=34, TX=23 en WROOM; RX=1, TX=2 en S3)
+#define UART_PI_RX   PI_UART_RX_PIN
+#define UART_PI_TX   PI_UART_TX_PIN
+#define UART_PI_BAUD PI_UART_BAUD
 
 // Identificadores de trama según docs/ICD.md
-static constexpr uint8_t SYNC        = 0xAA;
-static constexpr uint8_t ID_CMD      = 0x01;  // 13 B: GS -> ESP32 -> Pi (<BBBBffB)
-static constexpr uint8_t ID_NAV      = 0x02;  // 36 B: ESP32 -> GS (<BBBIfffffffB)
-static constexpr uint8_t ID_POWER    = 0x03;  // 17 B: ESP32 -> GS (<BBBIffBB)
-static constexpr uint8_t ID_THERMAL  = 0x04;  // 21 B: ESP32 -> GS (<BBBIfffBB)
-static constexpr uint8_t ID_HEALTH   = 0x05;  // 15 B: ESP32 -> GS (<BBBIBBBBHBB)
-static constexpr uint8_t ID_MAP      = 0x06;  // <=205 B: Pi -> ESP32 -> GS (<BBBBBB + payload + xor)
-static constexpr uint8_t ID_P1       = 0x55;  // 12 B: ESP32 -> Pi encoders (<BBiiBB)
-static constexpr uint8_t ID_P2       = 0x66;  // 4 B:  Pi -> ESP32 obstacle_state (<BBBB)
-static constexpr uint8_t ID_P3_LEG   = 0x77;  // ID heredado de MAP
-static constexpr uint8_t ID_P4_LEG   = 0x88;  // ID heredado de COMMAND (8 B)
-static constexpr uint8_t ID_PI_TEL   = 0x90;  // 12 B: Pi -> ESP32 (<BBfBBHBB)
+static constexpr uint8_t SYNC        = TelProtocol::SYNC_BYTE;
+static constexpr uint8_t ID_CMD      = TelProtocol::MSG_COMMAND;      // 13 B: GS -> ESP32 -> Pi (<BBBBffB)
+static constexpr uint8_t ID_NAV      = TelProtocol::MSG_NAV;          // 36 B: ESP32 -> GS (<BBBIfffffffB)
+static constexpr uint8_t ID_POWER    = TelProtocol::MSG_POWER;        // 17 B: ESP32 -> GS (<BBBIffBB)
+static constexpr uint8_t ID_THERMAL  = TelProtocol::MSG_THERMAL;      // 21 B: ESP32 -> GS (<BBBIfffBB)
+static constexpr uint8_t ID_HEALTH   = TelProtocol::MSG_HEALTH;       // 15 B: ESP32 -> GS (<BBBIBBBBHBB)
+static constexpr uint8_t ID_MAP      = TelProtocol::MSG_MAP;          // <=205 B: Pi -> ESP32 -> GS
+static constexpr uint8_t ID_P1       = TelProtocol::MSG_ENCODERS;     // 12 B: ESP32 -> Pi encoders (<BBiiBB)
+static constexpr uint8_t ID_P2       = TelProtocol::MSG_DRIVE_STATE;  // 4 B:  Pi -> ESP32 obstacle_state (<BBBB)
+static constexpr uint8_t ID_P3_LEG   = TelProtocol::MSG_MAP_LEGACY;   // ID heredado de MAP (0x77)
+static constexpr uint8_t ID_P4_LEG   = 0x88;                          // ID heredado de COMMAND (8 B)
+static constexpr uint8_t ID_PI_TEL   = TelProtocol::MSG_PI_TELEMETRY; // 12 B: Pi -> ESP32 (<BBfBBHBB)
 
-static constexpr size_t P3_MAX_PAYLOAD = 198;
-static constexpr size_t P3_MAX_FRAME   = 6 + P3_MAX_PAYLOAD + 1;  // 205 B
-static constexpr uint32_t LINK_TIMEOUT_MS = 2000;                 // > 2 s sin enlace -> STANDBY
+static constexpr size_t P3_MAX_PAYLOAD = TelProtocol::MAP_MAX_PAYLOAD;
+static constexpr size_t P3_MAX_FRAME   = TelProtocol::MAX_FRAME_SIZE; // 205 B
 
 // Estado compartido con el resto del firmware (Drivetrain, sensores y Telecom)
 volatile uint8_t  bridge_obstacle_state  = 3;     // arranca en STOP; luego lo actualiza 0x66 (3=STOP si cae el enlace)
 volatile uint32_t bridge_last_pi_ms      = 0;     // millis() de la última trama válida desde la Pi
-volatile uint32_t bridge_last_gs_ms      = 0;     // millis() del último comando/heartbeat desde GS
-volatile bool     bridge_link_lost       = false; // true si el enlace GS supera 2 s de inactividad
+volatile uint32_t bridge_last_gs_ms      = 0;     // millis() del último comando/ACK desde GS
+volatile bool     bridge_link_lost       = false; // true si el enlace GS supera 2 s de fallos continuos
 volatile float    bridge_pi_velocity_mps = 0.0f;  // velocidad lineal desde /odom (trama 0x90)
 volatile uint8_t  bridge_pi_cpu_temp_c   = 0;     // temperatura SoC RPi en °C (trama 0x90)
 volatile uint8_t  bridge_pi_cpu_pct      = 0;     // uso de CPU RPi en % (trama 0x90)
 volatile uint16_t bridge_pi_ram_mb       = 0;     // RAM usada en RPi en MB (trama 0x90)
 volatile uint8_t  bridge_pi_flags        = 0;     // bit0=UART Pi ok, bit1=LiDAR /scan ok, bits2..3=rover_status (trama 0x90)
 volatile uint8_t  bridge_pi_rover_status = 0;     // rover_status (0..3) reportado por la Pi en 0x90
+volatile uint8_t  bridge_sensor_flags    = 0;     // bits 2..4 de health_flags (0x04=BNO085, 0x08=INA226, 0x10=DS18B20)
 volatile uint8_t  bridge_last_cmd_id     = 0;     // último cmd_id recibido (0..3)
 volatile float    bridge_last_cmd_dist_m = 0.0f;  // última distancia recibida (m)
 volatile float    bridge_last_cmd_angle  = 0.0f;  // último ángulo recibido (°)
@@ -52,7 +60,9 @@ static constexpr size_t MAP_QUEUE_SLOTS = 16;
 static uint8_t  map_q_buf[MAP_QUEUE_SLOTS][P3_MAX_FRAME];
 static uint8_t  map_q_len[MAP_QUEUE_SLOTS];
 static volatile size_t map_q_head = 0, map_q_tail = 0;
-static volatile uint32_t last_hp_tx_ms = 0;
+static volatile uint32_t last_hp_tx_ms     = 0;
+static volatile uint32_t last_health_tx_ms = 0;
+static volatile uint32_t last_nav_tx_ms    = 0;
 static volatile uint32_t radio_fail_start_ms = 0;  // 0 = enlace ESP-NOW sano; >0 = inicio de fallos de ACK
 static int16_t  last_cmd_seq = -1;
 
@@ -74,12 +84,131 @@ static void trigger_link_lost() {
     }
 }
 
-// Hook general para Telecom: envía cualquier trama ICD (0x02..0x06) por ESP-NOW hacia ESP32-GS
+// ============================================================
+//  Integración ESP-NOW de Telecomunicaciones (ROVERT0_TEL_Code)
+// ============================================================
+#if defined(ARDUINO) && !defined(BRIDGE_HOST_TEST)
+
+struct RadioPacket {
+    uint16_t len;
+    uint8_t  srcMac[6];
+    uint8_t  data[250];
+};
+
+static QueueHandle_t radioRxQueue = nullptr;
+static bool espnow_ready = false;
+
+static bool macEquals(const uint8_t *a, const uint8_t *b) {
+    return memcmp(a, b, 6) == 0;
+}
+
+static bool peerMacConfigured(const uint8_t *mac) {
+    for (int i = 0; i < 6; ++i) {
+        if (mac[i] != 0x00) return true;
+    }
+    return false;
+}
+
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+static void onEspNowReceive(const esp_now_recv_info_t *info,
+                            const uint8_t *data,
+                            int len) {
+    const uint8_t *srcMac = (info != nullptr) ? info->src_addr : nullptr;
+#else
+static void onEspNowReceive(const uint8_t *srcMac,
+                            const uint8_t *data,
+                            int len) {
+#endif
+    if (srcMac == nullptr || data == nullptr || len <= 0 || len > 250) {
+        return;
+    }
+    RadioPacket packet{};
+    packet.len = static_cast<uint16_t>(len);
+    memcpy(packet.srcMac, srcMac, 6);
+    memcpy(packet.data, data, len);
+
+    if (radioRxQueue != nullptr) {
+        xQueueSend(radioRxQueue, &packet, 0);
+    }
+}
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+static void onEspNowSent(const esp_now_send_info_t *info, esp_now_send_status_t status) {
+    (void)info;
+    bridge_notify_radio_tx_status(status == ESP_NOW_SEND_SUCCESS);
+}
+#else
+static void onEspNowSent(const uint8_t *macAddr, esp_now_send_status_t status) {
+    (void)macAddr;
+    bridge_notify_radio_tx_status(status == ESP_NOW_SEND_SUCCESS);
+}
+#endif
+
+static bool initEspNow() {
+    WiFi.mode(WIFI_STA);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    if (esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+        return false;
+    }
+    if (esp_now_init() != ESP_OK) {
+        return false;
+    }
+    esp_now_register_recv_cb(onEspNowReceive);
+    esp_now_register_send_cb(onEspNowSent);
+
+    if (!peerMacConfigured(GROUND_STATION_MAC)) {
+        return false;
+    }
+
+    esp_now_peer_info_t peer{};
+    memcpy(peer.peer_addr, GROUND_STATION_MAC, 6);
+    peer.channel = ESPNOW_WIFI_CHANNEL;
+    peer.ifidx   = WIFI_IF_STA;
+    peer.encrypt = false;
+
+    if (!esp_now_is_peer_exist(GROUND_STATION_MAC)) {
+        if (esp_now_add_peer(&peer) != ESP_OK) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void processRadioRx() {
+    if (radioRxQueue == nullptr) return;
+    RadioPacket packet{};
+    while (xQueueReceive(radioRxQueue, &packet, 0) == pdTRUE) {
+        if (!macEquals(packet.srcMac, GROUND_STATION_MAC)) {
+            continue;
+        }
+        if (!TelProtocol::validateFrame(packet.data, packet.len)) {
+            continue;
+        }
+        if (packet.data[1] == ID_CMD) {
+            bridge_on_gs_frame(packet.data, packet.len);
+        }
+    }
+}
+
+void telecom_send_frame(const uint8_t *frame, size_t len) {
+    if (!espnow_ready || !TelProtocol::validateFrame(frame, len)) {
+        return;
+    }
+    if (!TelProtocol::isExternalTelemetry(frame[1])) {
+        return;
+    }
+    esp_now_send(GROUND_STATION_MAC, frame, len);
+}
+
+#else
+// Stub para pruebas unitarias en host (Linux g++)
 __attribute__((weak)) void telecom_send_frame(const uint8_t *frame, size_t len) {
     (void)frame; (void)len;
 }
+#endif
 
-// Hook específico de mapa (mantenido por compatibilidad; por defecto delega a telecom_send_frame)
+// Hook específico de mapa (delega a telecom_send_frame)
 __attribute__((weak)) void telecom_send_map_chunk(const uint8_t *frame, size_t len) {
     telecom_send_frame(frame, len);
 }
@@ -124,7 +253,7 @@ void bridge_send_gs_command(uint8_t cmd_id, float distance_m) {
     bridge_send_command_to_pi(auto_seq++, cmd_id, distance_m, 0.0f);
 }
 
-// Reporta el estado de ACK de transmisión ESP-NOW (llamar desde OnDataSent en Telecom)
+// Reporta el estado de ACK de transmisión ESP-NOW (llamado desde onEspNowSent)
 void bridge_notify_radio_tx_status(bool ack_ok) {
     uint32_t now = millis();
     if (ack_ok) {
@@ -143,7 +272,7 @@ void bridge_notify_radio_tx_status(bool ack_ok) {
     }
 }
 
-// Punto de entrada para Telecom cuando llega una trama por ESP-NOW desde ESP32-GS
+// Punto de entrada cuando llega una trama por ESP-NOW desde ESP32-GS
 bool bridge_on_gs_frame(const uint8_t *frame, size_t len) {
     if (!frame || len < 4 || frame[0] != SYNC) return false;
     if (xor8(frame, len - 1) != frame[len - 1]) return false;
@@ -167,7 +296,7 @@ bool bridge_on_gs_frame(const uint8_t *frame, size_t len) {
 // 0x02 NAV (36 B, <BBBIfffffffB) hacia Estación Terrena (10 Hz, alta prioridad)
 void bridge_send_nav(float yaw, float pitch, float roll,
                      float accel_x, float accel_y, float accel_z,
-                     float velocity_mps = NAN) {
+                     float velocity_mps) {
     static uint8_t seq = 0;
     uint32_t ts = millis();
     float vel = isnan(velocity_mps) ? (float)bridge_pi_velocity_mps : velocity_mps;
@@ -181,7 +310,8 @@ void bridge_send_nav(float yaw, float pitch, float roll,
     memcpy(&f[27], &accel_z, 4);
     memcpy(&f[31], &vel,     4);
     f[35] = xor8(f, 35);
-    last_hp_tx_ms = ts;
+    last_hp_tx_ms  = ts;
+    last_nav_tx_ms = ts;
     telecom_send_frame(f, sizeof(f));
 }
 
@@ -232,7 +362,7 @@ void bridge_send_health(uint8_t rover_status, uint8_t sensor_flags) {
             eff_status = rover_status;
         }
     }
-    uint8_t flags = (sensor_flags & 0x1C)
+    uint8_t flags = ((sensor_flags | bridge_sensor_flags) & 0x1C)
                   | (uart_ok  ? 0x01 : 0x00)
                   | (lidar_ok ? 0x02 : 0x00)
                   | (bridge_link_lost ? 0x20 : 0x00);
@@ -254,7 +384,8 @@ void bridge_send_health(uint8_t rover_status, uint8_t sensor_flags) {
     memcpy(&f[3],  &ts,  4);
     memcpy(&f[11], &ram, 2);
     f[14] = xor8(f, 14);
-    last_hp_tx_ms = ts;
+    last_hp_tx_ms     = ts;
+    last_health_tx_ms = ts;
     telecom_send_frame(f, sizeof(f));
 }
 
@@ -293,54 +424,73 @@ static void handle_frame(const uint8_t *f, size_t n) {
         bridge_pi_rover_status = (f[10] >> 2) & 0x03;
     } else if (id == ID_MAP || id == ID_P3_LEG) {
         enqueue_map_chunk(f, n);
+    } else if (id >= ID_NAV && id <= ID_HEALTH) {
+        // Permite reenviar tramas externas 0x02..0x05 ya formadas si se inyectan por UART en pruebas
+        last_hp_tx_ms = bridge_last_pi_ms;
+        telecom_send_frame(f, n);
     }
 }
 
 static void bridge_task(void *) {
+    // M14: esperar 50 ms para que terminen todos los constructores globales (Serial1) e initArduino()
+    vTaskDelay(pdMS_TO_TICKS(50));
+
     Serial1.setRxBufferSize(1024);  // holgura para ráfagas de 0x06 MAP
     Serial1.begin(UART_PI_BAUD, SERIAL_8N1, UART_PI_RX, UART_PI_TX);
-    static uint8_t buf[P3_MAX_FRAME];
-    size_t idx = 0, need = 0;
+
+#if defined(ARDUINO) && !defined(BRIDGE_HOST_TEST)
+    radioRxQueue = xQueueCreate(RADIO_RX_QUEUE_DEPTH, sizeof(RadioPacket));
+    if (radioRxQueue != nullptr) {
+        espnow_ready = initEspNow();
+    }
+    temp_sensors_init();
+#endif
+
+    static SerialFrameParser piParser;
+    static uint8_t completed[P3_MAX_FRAME];
+    size_t completedLen = 0;
+
     for (;;) {
+#if defined(ARDUINO) && !defined(BRIDGE_HOST_TEST)
+        processRadioRx();
+#endif
+
         while (Serial1.available()) {
             uint8_t b = Serial1.read();
-            if (idx == 0) {                      // esperar 0xAA
-                if (b == SYNC) buf[idx++] = b;
-                continue;
-            }
-            if (idx == 1) {                      // tipo de paquete desde la Pi
-                if (b == ID_P2) {
-                    buf[idx++] = b;
-                    need = 4;
-                } else if (b == ID_PI_TEL) {
-                    buf[idx++] = b;
-                    need = 12;
-                } else if (b == ID_MAP || b == ID_P3_LEG) {
-                    buf[idx++] = b;
-                    need = 0;
-                } else {
-                    idx = (b == SYNC) ? 1 : 0;
-                }
-                continue;
-            }
-            buf[idx++] = b;
-            if ((buf[1] == ID_MAP || buf[1] == ID_P3_LEG) && idx == 6) {
-                if (b > P3_MAX_PAYLOAD) { idx = 0; need = 0; continue; }
-                need = 6 + b + 1;
-            }
-            if (need && idx == need) {
-                handle_frame(buf, idx);
-                idx = need = 0;
+            if (piParser.feed(b, millis(), completed, completedLen)) {
+                handle_frame(completed, completedLen);
             }
         }
 
         uint32_t fail_start = radio_fail_start_ms;
-        uint32_t last_hp = last_hp_tx_ms;
-        uint32_t now = millis();
+        uint32_t last_hp    = last_hp_tx_ms;
+        uint32_t now        = millis();
+
         // Watchdog de enlace: solo se dispara si hay fallos continuos de radio durante > 2 s
         if (fail_start != 0 && (int32_t)(now - fail_start) > (int32_t)LINK_TIMEOUT_MS) {
             trigger_link_lost();
         }
+
+#if defined(ARDUINO) && !defined(BRIDGE_HOST_TEST)
+        uint32_t last_health = last_health_tx_ms;
+        uint32_t last_nav    = last_nav_tx_ms;
+
+        // Lectura no bloqueante de 3x DS18B20 -> 0x04 THERMAL cada 10 s (0.1 Hz)
+        temp_sensors_step();
+
+        // Envío automático de 0x05 HEALTH cada 2 s (0.5 Hz) si ningún otro módulo lo llamó
+        if (last_health == 0 || (int32_t)(now - last_health) >= 2000) {
+            bridge_send_health(bridge_pi_rover_status, bridge_sensor_flags);
+            last_hp = millis();
+        }
+
+        // Envío automático de 0x02 NAV a 10 Hz con la velocidad de /odom si la Pi está activa
+        // y el driver BNO085 externo aún no ha llamado a bridge_send_nav()
+        if (bridge_last_pi_ms != 0 && (last_nav == 0 || (int32_t)(now - last_nav) >= 100)) {
+            bridge_send_nav(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+            last_hp = millis();
+        }
+#endif
 
         // Drenar 1 fragmento de mapa de baja prioridad si no hubo telemetría urgente en los últimos 5 ms
         if (map_q_tail != map_q_head && (int32_t)(now - last_hp) >= 5) {
@@ -356,5 +506,5 @@ static void bridge_task(void *) {
 
 // Se ejecuta antes de setup(); la tarea corre en el núcleo 1 cuando arranca el scheduler
 __attribute__((constructor)) static void bridge_autostart() {
-    xTaskCreatePinnedToCore(bridge_task, "uart_bridge", 4096, nullptr, 2, nullptr, 1);
+    xTaskCreatePinnedToCore(bridge_task, "uart_bridge", 6144, nullptr, 2, nullptr, 1);
 }
