@@ -3,6 +3,8 @@
 Este documento explica cómo funciona la pestaña **`Gráficas`** de la Estación Terrena: qué datos muestra, cómo se organizan mientras se registran y cómo se exportan a `Excel` o `CSV`. Está pensado para quien vaya a usar la pestaña y para quien vaya a modificar su código.
 
 > **Video de la prueba:** [`media/graficas_prueba.mp4`](media/graficas_prueba.mp4) (1 min). Muestra una sesión completa en modo demo: nombre, iniciar, indicadores, pausar, reanudar, detener y el Excel exportado.
+>
+> **Presentación:** [`media/presentacion_graficas.pdf`](media/presentacion_graficas.pdf) (10 diapositivas), también editable en [`.pptx`](media/presentacion_graficas.pptx).
 
 ![Pestaña Gráficas registrando una sesión](media/graficas_en_vivo.png)
 
