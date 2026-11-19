@@ -63,22 +63,35 @@ python3 main.py --demo
 
 ### Caso B: Encender la interfaz con la tarjeta `ESP32-GS` conectada por `USB`
 
-1. **Tu mano** conecta la tarjeta `ESP32-GS` a un puerto `USB` de tu computadora usando un cable que transfiera datos.
-2. **Tu terminal** verifica cómo se llama el puerto `USB` (casi siempre es `/dev/ttyUSB0` o `/dev/ttyACM0`):
+1. **El operador** atornilla la antena monopolo de `2.4 GHz` en la tarjeta `ESP32-GS` antes de conectarla.
+2. **El operador** conecta la tarjeta `ESP32-GS` a un puerto `USB` de la computadora usando un cable de datos.
+3. **La terminal** verifica el nombre del puerto `USB` (casi siempre `/dev/ttyUSB0` o `/dev/ttyACM0`):
    ```bash
    ls /dev/ttyUSB* /dev/ttyACM*
    ```
-3. **Tu terminal** inicia el programa:
+4. **La terminal** consulta la dirección `MAC` de la placa conectada (opcional, para confirmar que es la `ESP32-GS` `8c:94:df:70:64:34` o anotar la `MAC` de una placa nueva del rover):
+   ```bash
+   ~/.platformio/packages/tool-esptool/esptool --port /dev/ttyUSB0 read-mac
+   ```
+5. **El operador** actualiza `ROVER_MAC` en `firmware/esp32_ground_station/src/Config.h` y vuelve a flashear la `ESP32-GS` **solo si cambió la placa física del rover**:
+   ```bash
+   nano ~/rovert-o-system/firmware/esp32_ground_station/src/Config.h
+   ~/.platformio/penv/bin/pio run -d ~/rovert-o-system/firmware/esp32_ground_station -e esp32dev -t upload --upload-port /dev/ttyUSB0
+   ```
+   *(Nota: El usuario debe mantener presionado el botón `BOOT` durante `2 s` si la subida se detiene en `Connecting....`).*
+6. **La terminal** inicia la interfaz gráfica:
    * **Cuando el puerto es `/dev/ttyUSB0`:**
      ```bash
      cd ~/rovert-o-system/ground_station_gui/GUI
-     python3 main.py
+     GS_PORT=/dev/ttyUSB0 python3 main.py
      ```
    * **Cuando el puerto tiene otro nombre (por ejemplo `/dev/ttyACM0`):**
      ```bash
      cd ~/rovert-o-system/ground_station_gui/GUI
      GS_PORT=/dev/ttyACM0 python3 main.py
      ```
+7. **El operador** enciende el rover (o presiona el botón `EN` de la `ESP32-Onboard`) cuando la interfaz ya está abierta.
+8. **La interfaz** cambia el campo `Acción en proceso` a **`En espera (Standby)`** en `2` a `3` segundos (si muestra `Enlace perdido (Standby)`, el operador presiona `Iniciar misión` o reinicia la placa del rover).
 
 ---
 
@@ -92,12 +105,11 @@ python3 main.py --demo
 
 ---
 
-## 6. Dependencias pendientes por cerrar con Telecomunicaciones
+## 6. Estado del enlace con `ESP32-GS`
 
-La interfaz de tu computadora ya está terminada, pero el enlace físico con el rover depende de tres cierres en la tarjeta `ESP32-GS`:
+La interfaz gráfica y el firmware de `firmware/esp32_ground_station/` ya están integrados con `ESP-NOW` y el protocolo `ICD`:
 
-| Dependencia abierta | Estado actual | Qué falta hacer |
+| Elemento | Estado actual | Acción requerida |
 |---|---|---|
-| **Conexión física de la `ESP32-GS`** | El programa entra en modo `dry-run` cuando no detecta la placa en `/dev/ttyUSB0`. | **El operador** debe conectar la `ESP32-GS` por `USB` antes de correr `python3 main.py`. |
-| **Limpieza de `firmware/esp32_ground_station/src/main.cpp`** | El archivo actual todavía tiene el código viejo de prueba (`enviarBloque100KbitsLidar()`) que imprime texto cada `5 s`. | **Telecomunicaciones** debe borrar ese envío de prueba y cualquier `Serial.print` de texto para no ensuciar el cable `USB`. |
-| **Enlace `ESP-NOW` bidireccional en la `ESP32-GS`** | El archivo lee `8 B` antiguos y tiene `esp_now_send()` comentado. | **Telecomunicaciones** debe leer los `13 B` de `0x01 COMMAND` desde `Serial`, enviarlos por `ESP-NOW` hacia la `ESP32-Onboard` y reenviar por `Serial.write(data, len)` las tramas `0x02`–`0x06` que lleguen del rover. |
+| **Conexión física de la `ESP32-GS`** | El programa entra en modo `dry-run` cuando no detecta la placa en `/dev/ttyUSB0`. | **El operador** debe conectar la `ESP32-GS` con su antena por `USB` antes de correr `main.py`. |
+| **Firmware `ESP-NOW` (`0x01`–`0x06`)** | El código en `firmware/esp32_ground_station/src/` ya reenvía comandos de `13 B` y telemetría/mapas binarios sin texto extra. | **El equipo** solo debe actualizar `ROVER_MAC` en `src/Config.h` y reflashear si cambia la placa física del rover (ver `docs/TELECOM.md`). |
