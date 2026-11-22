@@ -7,7 +7,7 @@
 
 // MAC Wi-Fi STA real de la ESP32-Onboard (DEVKIT V1) del rover.
 static const uint8_t ROVER_MAC[6] = {
-    0x28, 0x05, 0xA5, 0x30, 0xE7, 0xA8
+    0x68, 0x09, 0x47, 0x19, 0x9E, 0xB0
 };
 
 // Ambos nodos ESP-NOW DEBEN usar el mismo canal.
