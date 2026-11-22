@@ -23,6 +23,9 @@ class GroundStationSerial:
         # Abre el puerto; si no hay ESP32 queda en modo prueba en seco
         try:
             self.ser = serial.Serial(port, baudrate, timeout=0, write_timeout=0.1)
+            # Evita que DTR/RTS mantengan la ESP32-GS en reset o bootloop al abrir el puerto
+            self.ser.dtr = False
+            self.ser.rts = False
         except (serial.SerialException, OSError):
             self.ser = None
             print(f"[GS] Sin hardware en {port}: modo dry-run")

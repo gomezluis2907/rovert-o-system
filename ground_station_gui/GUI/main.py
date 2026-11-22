@@ -124,6 +124,7 @@ def show_map(label, grid, meta):
     label.image = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
     label.configure(image=label.image,
                     text=f"{w}x{h} @ {meta['resolution_mm']} mm/celda", compound="top")
+    print(f"[GS] Mapa mostrado: {w}x{h} ({meta['resolution_mm']} mm/celda)")
 
 
 def handle_telemetry_frame(frame: bytes, params, thermal_state: dict, now: float = None):
@@ -277,10 +278,12 @@ if __name__ == "__main__":
     params.map.label_current_current.configure(textvariable=params.map.val_current)
     params.map_params.label_angular_ac.configure(text="Ac. lineal [m/s\u00b2]")
 
-    # Etiqueta del mapa dentro del frame existente (debajo de los botones/etiquetas de Map)
+    # Etiqueta del mapa dentro del frame existente (por encima del _canvas interno de CTkFrame)
     map_label = ctk.CTkLabel(master=params.map, text="Esperando mapa...", font=params.fonts[1])
-    map_label.pack(expand=True, fill="both", padx=24, pady=(80, 56))
-    map_label.lower()
+    map_label.place(relx=0.5, rely=0.54, anchor="center")
+    for w in params.map.winfo_children():
+        if w not in (map_label, getattr(params.map, "_canvas", None)):
+            w.lift()
 
     mission_state = {"running": False, "t0": 0.0}
     thermal_state = {"last_rx": 0.0, "by_id": {}, "stale": set(), "last_any_rx": 0.0, "link_lost": False}
