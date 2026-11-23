@@ -20,3 +20,6 @@ enum RoverState : uint8_t {
 
 // Ejecuta un paso de la máquina de estados y devuelve el estado actual del rover
 uint8_t rover_state_machine_step();
+
+// Fuerza a reaplicar la orden de movimiento en el siguiente ciclo (p. ej. al salir de modo manual serial)
+void rover_state_machine_force_sync();

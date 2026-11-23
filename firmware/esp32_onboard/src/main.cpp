@@ -26,6 +26,7 @@ constexpr uint8_t PIN_STBY = 22;
 #endif
 
 Drivetrain drive(fl, rl, fr, rr, PIN_STBY);
+static bool manualSerialOverride = false;
 
 void setup()
 {
@@ -33,14 +34,40 @@ void setup()
     drive.begin();
     drive.setCruiseSpeed(4.0f);        // objetivo nominal ICD: 4.0 cm/s (>= minSpeed 1.53 cm/s)
 
-    Serial.println("Comandos: w=adelante s=atras a=izq d=der x=stop b=freno");
-    Serial.println("          +/- = crucero ±0.5 cm/s   t = adelante 3 s");
+    Serial.println("Comandos: w=adelante s=atras a=izq d=der x=stop(vuelve a Pi) b=freno");
+    Serial.println("          +/- = crucero ±0.5 cm/s   t = adelante 3 s   p = modo Pi");
     Serial.printf ("Velocidad minima alcanzable: %.2f cm/s\n", drive.minSpeed());
 }
 
 void loop()
 {
-    rover_state_machine_step();
-    drive.update();
+    drive.update();                    // cierra maniobras temporizadas
+
+    if (Serial.available()) {
+        char c = Serial.read();
+        bool handled = true;
+        switch (c) {
+            case 'w': manualSerialOverride = true;  drive.forward();          break;
+            case 's': manualSerialOverride = true;  drive.backward();         break;
+            case 'a': manualSerialOverride = true;  drive.turnLeft();         break;
+            case 'd': manualSerialOverride = true;  drive.turnRight();        break;
+            case 't': manualSerialOverride = true;  drive.forward(-1, 3000);  break;
+            case 'b': manualSerialOverride = true;  drive.brake();            break;
+            case 'x': manualSerialOverride = false; drive.stop(); rover_state_machine_force_sync(); break;
+            case 'p': manualSerialOverride = false; rover_state_machine_force_sync(); break;
+            case '+': drive.setCruiseSpeed(drive.cruiseSpeed() + 0.5f); break;
+            case '-': drive.setCruiseSpeed(drive.cruiseSpeed() - 0.5f); break;
+            default:  handled = false; break;
+        }
+        if (handled) {
+            Serial.printf("modo=%s crucero=%.2f cm/s  L=%.2f  R=%.2f\n",
+                          manualSerialOverride ? "MANUAL" : "PI",
+                          drive.cruiseSpeed(), drive.leftSpeed(), drive.rightSpeed());
+        }
+    }
+
+    if (!manualSerialOverride) {
+        rover_state_machine_step();
+    }
     delay(10);
 }
