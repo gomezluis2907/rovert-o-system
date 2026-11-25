@@ -15,7 +15,7 @@ from datetime import datetime
 
 import numpy as np
 
-from telemetry import CHANNELS
+from telemetry import CHANNELS, GROUPS, INDEX
 
 DEFAULT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lecturas"))
 EXPORT_DIRNAME = "exportados"
@@ -339,9 +339,9 @@ def export_csv(session, path):
 
 
 def export_xlsx(session, path):
-    """Libro con tres hojas: informacion de la sesion, datos y estadisticas."""
+    """Libro con cuatro hojas: informacion de la sesion, datos, estadisticas y graficas."""
     from openpyxl import Workbook  # se importa aqui: solo hace falta al exportar a Excel
-    from openpyxl.styles import Font
+    from openpyxl.styles import Font, PatternFill
 
     bold = Font(bold=True)
     book = Workbook()
@@ -362,14 +362,79 @@ def export_xlsx(session, path):
     data.freeze_panes = "A2"
 
     stats = book.create_sheet("Estadísticas")
-    stats.append(["Variable", "Unidad", "Lecturas válidas", "Sin dato", "Mínimo", "Máximo", "Promedio"])
-    for ch, st in zip(CHANNELS, session.stats):
-        stats.append([ch.label, ch.unit, st.n, len(session) - st.n, st.lo, st.hi, st.mean])
+    stats.append(["Variable", "Unidad", "Lecturas válidas", "Sin dato", "Mínimo", "Máximo", "Promedio",
+                  "Rango normal", "Fuera de rango"])
+    alert = PatternFill("solid", fgColor="FDE2E2")
+    for ch, st, col in zip(CHANNELS, session.stats, session.cols):
+        if ch.normal:
+            lo, hi = ch.normal
+            outside = sum(1 for v in col if v is not None and not lo <= v <= hi)
+            normal = f"{lo:g} a {hi:g} {ch.unit}"
+        else:
+            outside, normal = None, "sin definir"
+        stats.append([ch.label, ch.unit, st.n, len(session) - st.n, st.lo, st.hi, st.mean, normal, outside])
+        if outside:
+            for cell in stats[stats.max_row]:
+                cell.fill = alert
 
     for sheet in (data, stats):
         for cell in sheet[1]:
             cell.font = bold
         for column in sheet.columns:
             sheet.column_dimensions[column[0].column_letter].width = max(14, len(str(column[0].value)) + 3)
+    stats.column_dimensions["A"].width = 34
+    for row in stats.iter_rows(min_row=2, min_col=5, max_col=7):  # minimo, maximo, promedio
+        for cell in row:
+            cell.number_format = "0.000"                 # solo el formato: el valor guarda toda la precision
+
+    _add_charts(book.create_sheet("Gráficas"), data, len(session))
     book.save(path)
     return path
+
+
+def _add_charts(sheet, data, n_rows):
+    """Una grafica por grupo y unidad (eje X = Tiempo en s), con los mismos datos de la hoja "Datos"."""
+    from openpyxl.chart import Reference, ScatterChart, Series as XlSeries
+    from openpyxl.styles import Font
+
+    sheet["A1"] = "Gráficas de la sesión: cada curva usa las columnas de la hoja \"Datos\" (eje X = Tiempo en s)."
+    sheet["A1"].font = Font(bold=True)
+    if n_rows == 0:
+        sheet["A3"] = "La sesión no tiene lecturas."
+        return
+    last = n_rows + 1                                    # fila 1 = encabezados
+    x = Reference(data, min_col=2, min_row=2, max_row=last)
+    charts = []
+    for title, keys in GROUPS:
+        units = list(dict.fromkeys(CHANNELS[INDEX[k]].unit for k in keys))
+        for unit in units:
+            chart = ScatterChart()
+            names = [CHANNELS[INDEX[k]].short for k in keys if CHANNELS[INDEX[k]].unit == unit]
+            chart.title = (f"{title} [{unit}]" if len(units) == 1 else f"{' y '.join(names)} [{unit}]") + "  vs  Tiempo (s)"
+            chart.title.overlay = False                      # el titulo no se encima con la grafica
+            chart.varyColors = False                         # una curva = un color (no un color por punto)
+            chart.x_axis.delete = chart.y_axis.delete = False  # sin esto Excel oculta los ejes
+            chart.x_axis.tickLblPos = chart.y_axis.tickLblPos = "low"  # numeros al borde aunque haya negativos
+            chart.x_axis.majorGridlines = None
+            chart.height, chart.width = 7.5, 16
+            if len(names) > 1:
+                chart.legend.position = "t"                  # arriba: no pisa los numeros del eje X
+                chart.legend.overlay = False
+            else:
+                chart.legend = None                          # una sola curva: el titulo ya la nombra
+            for k in keys:
+                ch = CHANNELS[INDEX[k]]
+                if ch.unit != unit:
+                    continue
+                col = 3 + INDEX[k]                       # columnas A=Timestamp, B=Tiempo, C... canales
+                y = Reference(data, min_col=col, min_row=1, max_row=last)
+                series = XlSeries(y, x, title_from_data=True)
+                series.marker.symbol = "none"
+                series.smooth = False
+                series.graphicalProperties.line.solidFill = ch.color.lstrip("#").upper()
+                series.graphicalProperties.line.width = 19050  # 1.5 pt
+                chart.series.append(series)
+            charts.append(chart)
+    for n, chart in enumerate(charts):                   # dos columnas de graficas
+        r, c = divmod(n, 2)
+        sheet.add_chart(chart, f"{'A' if c == 0 else 'K'}{3 + r * 16}")

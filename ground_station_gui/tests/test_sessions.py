@@ -103,7 +103,7 @@ class SessionTests(unittest.TestCase):
         s.stop(t0 + 1)
         path = ss.export_xlsx(s, os.path.join(self.tmp.name, "out.xlsx"))
         book = load_workbook(path)
-        self.assertEqual(book.sheetnames, ["Sesión", "Datos", "Estadísticas"])
+        self.assertEqual(book.sheetnames, ["Sesión", "Datos", "Estadísticas", "Gráficas"])
         data = list(book["Datos"].iter_rows(values_only=True))
         self.assertEqual(len(data), 11)
         self.assertEqual(data[1][2], 20.123456789)
@@ -112,6 +112,23 @@ class SessionTests(unittest.TestCase):
         stats = {r[0]: r for r in book["Estadísticas"].iter_rows(values_only=True)}
         self.assertEqual(stats[CHANNELS[0].label][2:4], (10, 0))
         self.assertEqual(stats[CHANNELS[2].label][2:4], (0, 10))
+
+    def test_xlsx_has_every_parameter_and_a_chart_per_unit(self):
+        from openpyxl import load_workbook
+        from telemetry import GROUPS, INDEX
+        s, t0 = self.record()
+        s.stop(t0 + 1)
+        book = load_workbook(ss.export_xlsx(s, os.path.join(self.tmp.name, "out.xlsx")))
+        header = next(book["Datos"].iter_rows(values_only=True))
+        for key in ("temp_lidar", "temp_rasp", "voltaje", "corriente", "cpu", "ram"):
+            ch = CHANNELS[INDEX[key]]
+            self.assertIn(f"{ch.column} ({ch.unit})", header)
+        expected = sum(len({CHANNELS[INDEX[k]].unit for k in keys}) for _t, keys in GROUPS)
+        self.assertEqual(len(book["Gráficas"]._charts), expected)
+        stats = {r[0]: r for r in book["Estadísticas"].iter_rows(values_only=True)}
+        ram = CHANNELS[INDEX["ram"]]
+        self.assertEqual(stats[ram.label][7], "1250 a 3000 MB")
+        self.assertEqual(stats[ram.label][8], 10)            # las lecturas de prueba (0..9 MB) estan fuera de rango
 
     def test_to_float(self):
         self.assertIsNone(to_float("null"))

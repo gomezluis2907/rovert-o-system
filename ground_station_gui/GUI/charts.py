@@ -10,6 +10,7 @@
 """
 import math
 import tkinter as tk
+import tkinter.font as tkfont
 
 import numpy as np
 
@@ -119,7 +120,8 @@ class TimeChart(tk.Canvas):
         two_axes, percent = len(units) == 2, len(units) > 2
         x0 = 44 if self.compact else 56
         x1 = w - (x0 if two_axes else 14)
-        y0 = 28 if self.legend else 10
+        legend = self._legend_layout(series, x0, x1) if self.legend else []
+        y0 = 10 + 18 * (legend[-1][3] + 1) if legend else 10  # la leyenda puede ocupar varias filas
         y1 = h - 22
         if x1 - x0 < 60 or y1 - y0 < 30:
             return
@@ -204,8 +206,7 @@ class TimeChart(tk.Canvas):
         self.create_rectangle(x1 + 1, 0, w, h, fill=BG, outline="")
         self.create_rectangle(x0, y0, x1, y1, outline=FRAME)
         self._axis_labels(units, ranges, percent, x0, x1, y0, y1, py)
-        if self.legend:
-            self._legend(series, units, x0, x1)
+        self._legend(legend)
         self._geom = (x0, x1, y0, y1, xa, xb, visible, ranges)
 
     def _axis_labels(self, units, ranges, percent, x0, x1, y0, y1, py):
@@ -223,18 +224,28 @@ class TimeChart(tk.Canvas):
                     else:
                         self.create_text(x1 + 6, py(tick, unit), text=f"{tick:.6g}", anchor="w", font=FONT, fill=MUTED)
 
-    def _legend(self, series, units, x0, x1):
-        x = x0
+    def _legend_layout(self, series, x0, x1):
+        """Posicion de cada elemento de la leyenda; pasa a la siguiente fila si no cabe."""
+        if not hasattr(self, "_font"):
+            self._font = tkfont.Font(font=FONT)
+        items, x, row = [], x0, 0
         for s in series:
             tail = s.v[-200:]
             tail = tail[~np.isnan(tail)]
             last = float(tail[-1]) if tail.size else None
-            self.create_rectangle(x, 9, x + 10, 19, fill=s.color, outline="")
-            item = self.create_text(x + 15, 14, anchor="w", font=FONT, fill=TEXT,
-                                    text=f"{s.label}  {fmt_value(last)} {s.unit}")
-            x = self.bbox(item)[2] + 16
-            if x > x1 - 60:
-                break
+            text = f"{s.label}  {fmt_value(last)} {s.unit}"
+            width = 15 + self._font.measure(text)
+            if x > x0 and x + width > x1:
+                row, x = row + 1, x0
+            items.append((s, text, x, row))
+            x += width + 16
+        return items
+
+    def _legend(self, items):
+        for s, text, x, row in items:
+            y = 14 + 18 * row
+            self.create_rectangle(x, y - 5, x + 10, y + 5, fill=s.color, outline="")
+            self.create_text(x + 15, y, anchor="w", font=FONT, fill=TEXT, text=text)
 
     def _empty(self, x0, x1, y0, y1):
         self.create_rectangle(x0, y0, x1, y1, outline=FRAME)

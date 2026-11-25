@@ -5,8 +5,6 @@ El muestreo (adquisicion) y el redibujado (visualizacion) corren en ciclos separ
 adquisicion no depende de la frecuencia con que se actualizan las graficas.
 """
 import os
-import subprocess
-import sys
 import time
 from tkinter import filedialog
 
@@ -14,7 +12,7 @@ import customtkinter as ctk
 
 import sessions as ss
 from charts import Series, TimeChart, fmt_value
-from telemetry import CHANNELS, NO_DATA, OK, SETPOINT, STALE, SensorHub
+from telemetry import CHANNELS, GROUPS, INDEX, NO_DATA, OK, SETPOINT, STALE, SensorHub
 
 # paleta propia del dashboard (la de "Parametros" vive en colors.py y no se toca)
 BG, CARD, BORDER, SOFT = "#e9eef5", "#ffffff", "#d6deea", "#f1f5f9"
@@ -24,15 +22,14 @@ FAMILY = "Segoe UI"
 
 RENDER_MS = 250                 # refresco visual
 LIVE_MAX = 36000                # lecturas que conserva el buffer en vivo (no afecta a las sesiones)
-RATES = {"1 Hz": 1000, "2 Hz": 500, "5 Hz": 200, "10 Hz": 100}
+PERIOD_MS = 500                 # periodo de registro fijo: 2 lecturas por segundo
 WINDOWS = {"30 s": 30.0, "Todo": None}
-SMALL_CHARTS = (                # (titulo, canales)
-    ("Temperatura", (0, 1)),
-    ("Velocidad", (4,)),
-    ("Aceleración angular", (5, 6, 7)),
-    ("Distancia y dirección (consignas)", (2, 3)),
-)
-STATUS_COLOR = {OK: GREEN, STALE: RED, NO_DATA: GRAY, SETPOINT: MUTED}
+# graficas por grupo (titulo, indices de CHANNELS); con dos unidades se usa eje izquierdo y derecho
+SMALL_CHARTS = tuple((title, tuple(INDEX[k] for k in keys)) for title, keys in GROUPS)
+SMALL_COLS = 2                  # columnas de la cuadricula de graficas por grupo
+PER_ROW = 7                     # selectores e indicadores por fila
+OUT_OF_RANGE = "fuera de rango"
+STATUS_COLOR = {OK: GREEN, STALE: RED, NO_DATA: GRAY, SETPOINT: MUTED, OUT_OF_RANGE: RED}
 
 _fonts = {}
 
@@ -78,6 +75,8 @@ class KpiCard(ctk.CTkFrame):
         head.pack(fill="x", padx=12, pady=(8, 0))
         label(head, "●", 11, color=channel.color).pack(side="left")
         label(head, " " + channel.short, 11, True, MUTED).pack(side="left")
+        if channel.normal:  # rango "Normal" de la pestana Parametros
+            label(head, f"normal {channel.normal[0]:g}–{channel.normal[1]:g}", 10, color=MUTED).pack(side="right")
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", padx=12)
         self.value = label(row, "—", 22, True)
@@ -95,6 +94,9 @@ class KpiCard(ctk.CTkFrame):
     def update_values(self, value, stats, status):
         set_text(self.value, fmt_value(value))
         set_text(self.range, f"mín {fmt_value(stats.lo)}  ·  máx {fmt_value(stats.hi)}")
+        lo_hi = self.channel.normal
+        if status == OK and value is not None and lo_hi and not lo_hi[0] <= value <= lo_hi[1]:
+            status = OUT_OF_RANGE
         set_text(self.mean, f"prom {fmt_value(stats.mean)}")
         if self.status.cget("text") != status:
             self.status.configure(text=status, text_color=STATUS_COLOR.get(status, GRAY))
@@ -111,7 +113,7 @@ class Graphics(ctk.CTkFrame):
         self.viewing = None           # sesion abierta para consulta historica
         self.selected = [0, 1]        # canales visibles en la grafica principal
         self.floors = {}              # "limpiar vista": instante desde el que se dibuja cada fuente
-        self.period_ms = 500
+        self.period_ms = PERIOD_MS
         self.link = self.link_port = None
         self.demo = False
         self.error = ""
@@ -120,7 +122,7 @@ class Graphics(ctk.CTkFrame):
         self._draw_after = 0.0
 
         # distribucion: barra de adquisicion, franja de estado/exportacion y, ocupando el resto,
-        # la grafica principal (izquierda) junto a las cuatro graficas por grupo (derecha, 2 x 2)
+        # la grafica principal (izquierda) junto a las graficas por grupo (derecha)
         self._msg_until = 0.0
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
@@ -147,10 +149,7 @@ class Graphics(ctk.CTkFrame):
         box = card(self)
         box.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(14, 6))
         box.grid_columnconfigure(1, weight=1)
-        title = ctk.CTkFrame(box, fg_color="transparent")
-        title.grid(row=0, column=0, padx=(16, 12), pady=10)
-        label(title, "Adquisición de datos", 15, True, anchor="w").pack(anchor="w")
-        label(title, "Nombre de la sesión y control de registro", 10, color=MUTED, anchor="w", height=14).pack(anchor="w")
+        label(box, "Adquisición de datos", 15, True).grid(row=0, column=0, padx=(16, 12), pady=10)
 
         self.entry_name = ctk.CTkEntry(box, height=32, corner_radius=8, font=font(12), fg_color=SOFT,
                                        border_color=BORDER, text_color=TEXT, placeholder_text_color=GRAY,
@@ -158,24 +157,18 @@ class Graphics(ctk.CTkFrame):
         self.entry_name.grid(row=0, column=1, sticky="ew", padx=6)
         self.entry_name.bind("<Return>", lambda _e: self._start())
 
-        self.rate = ctk.CTkOptionMenu(box, values=list(RATES), command=self._set_rate, width=78, height=32,
-                                      corner_radius=8, font=font(12), fg_color=SOFT, button_color="#e2e8f0",
-                                      button_hover_color=BORDER, text_color=TEXT, dropdown_font=font(12))
-        self.rate.set("2 Hz")
-        self.rate.grid(row=0, column=2, padx=6)
-
         self.btn_start = button(box, "▶  Iniciar", self._start, 104)
-        self.btn_start.grid(row=0, column=3, padx=4)
+        self.btn_start.grid(row=0, column=2, padx=4)
         self.btn_pause = button(box, "Pausar", self._pause, 104, AMBER, "#b45309")
-        self.btn_pause.grid(row=0, column=4, padx=4)
+        self.btn_pause.grid(row=0, column=3, padx=4)
         self.btn_stop = button(box, "■  Detener", self._stop, 104, RED, RED_D)
-        self.btn_stop.grid(row=0, column=5, padx=4)
+        self.btn_stop.grid(row=0, column=4, padx=4)
 
         self.pill = ctk.CTkLabel(box, text="DETENIDO", font=font(11, True), text_color="#ffffff",
                                  fg_color=GRAY, corner_radius=10, width=112, height=24)
-        self.pill.grid(row=0, column=6, padx=(12, 6))
+        self.pill.grid(row=0, column=5, padx=(12, 6))
         clock = ctk.CTkFrame(box, fg_color="transparent")
-        clock.grid(row=0, column=7, padx=(6, 16))
+        clock.grid(row=0, column=6, padx=(6, 16))
         self.timer = label(clock, "00:00:00", 18, True, height=22)
         self.timer.pack(anchor="e")
         self.count = label(clock, "0 lecturas", 10, color=MUTED, height=14)
@@ -187,9 +180,10 @@ class Graphics(ctk.CTkFrame):
         self.kpis_visible = False
         self.kpis = []
         for i, channel in enumerate(CHANNELS):
-            row.grid_columnconfigure(i, weight=1, uniform="kpi")
+            r, col = divmod(i, PER_ROW)
+            row.grid_columnconfigure(col, weight=1, uniform="kpi")
             kpi = KpiCard(row, channel)
-            kpi.grid(row=0, column=i, sticky="nsew", padx=4, pady=6)
+            kpi.grid(row=r, column=col, sticky="nsew", padx=4, pady=3)
             self.kpis.append(kpi)
 
     def _toggle_kpis(self):
@@ -226,7 +220,8 @@ class Graphics(ctk.CTkFrame):
         for i, channel in enumerate(CHANNELS):
             chip = ctk.CTkButton(chips, text=channel.short, width=20, height=24, corner_radius=12, font=font(11),
                                  border_width=1, command=lambda i=i: self._toggle_channel(i))
-            chip.pack(side="left", padx=(0, 5))
+            r, col = divmod(i, PER_ROW)
+            chip.grid(row=r, column=col, sticky="w", padx=(0, 5), pady=(0, 4))
             self.chips.append(chip)
 
         label(box, "Rueda: zoom  ·  Arrastrar: desplazar  ·  Doble clic: volver a seguir  ·  Cursor: valor en ese instante",
@@ -235,17 +230,18 @@ class Graphics(ctk.CTkFrame):
         self.main_chart.pack(fill="both", expand=True, padx=12, pady=(4, 2))
 
     def _build_small(self, parent):
-        """Graficas individuales por grupo de sensores, en cuadricula de 2 x 2."""
+        """Graficas individuales por grupo de sensores, en cuadricula de SMALL_COLS columnas."""
         grid = ctk.CTkFrame(parent, fg_color="transparent")
         grid.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         self.small = []
+        rows = -(-len(SMALL_CHARTS) // SMALL_COLS)
         for n, (title, indices) in enumerate(SMALL_CHARTS):
-            r, col = divmod(n, 2)
+            r, col = divmod(n, SMALL_COLS)
             grid.grid_rowconfigure(r, weight=1, uniform="small")
             grid.grid_columnconfigure(col, weight=1, uniform="small")
             box = card(grid)
-            box.grid(row=r, column=col, sticky="nsew", padx=(0, 6) if col == 0 else (6, 0),
-                     pady=(0, 6) if r == 0 else (6, 0))
+            box.grid(row=r, column=col, sticky="nsew", padx=(0 if col == 0 else 5, 0 if col == SMALL_COLS - 1 else 5),
+                     pady=(0 if r == 0 else 5, 0 if r == rows - 1 else 5))
             units = " · ".join(dict.fromkeys(CHANNELS[i].unit for i in indices))
             label(box, f"{title}  [{units}]", 11, True, anchor="w", height=18).pack(fill="x", padx=12, pady=(8, 0))
             chart = TimeChart(box, compact=True, legend=True, interactive=False)
@@ -257,7 +253,7 @@ class Graphics(ctk.CTkFrame):
         box = card(self)
         box.grid(row=1, column=0, sticky="ew", padx=14, pady=6)
         self.status = {}
-        for n, name in enumerate(("ESP32-GS", "Recepción", "Sensores", "Adquisición")):
+        for n, name in enumerate(("ESP32-GS", "Recepción", "Sensores")):
             label(box, name, 11, color=MUTED).pack(side="left", padx=(16 if n == 0 else 18, 5), pady=7)
             value = label(box, "—", 11, True)
             value.pack(side="left")
@@ -265,9 +261,7 @@ class Graphics(ctk.CTkFrame):
 
         self.btn_kpis = button(box, "Indicadores", self._toggle_kpis, 130, ghost=True)
         self.btn_kpis.pack(side="right", padx=(6, 12))
-        button(box, "Abrir carpeta", self._open_folder, 104, ghost=True).pack(side="right", padx=3)
-        button(box, "Excel", lambda: self._export(".xlsx"), 70, GREEN, "#15803d").pack(side="right", padx=3)
-        button(box, "CSV", lambda: self._export(".csv"), 70).pack(side="right", padx=3)
+        button(box, "Exportar", self._export, 96, GREEN, "#15803d").pack(side="right", padx=3)
         self.export_msg = label(box, "", 10, color=MUTED, anchor="e")  # sesion a exportar o resultado
         self.export_msg.pack(side="right", padx=8)
 
@@ -310,9 +304,6 @@ class Graphics(ctk.CTkFrame):
             self._due = mono  # se atraso (equipo ocupado): no acumular disparos
         self.after(max(1, int((self._due - mono) * 1000)), self._sample)
 
-    def _set_rate(self, choice):
-        self.period_ms = RATES[choice]
-
     def _start(self):
         if self.session is not None and self.session.active:
             return
@@ -322,6 +313,7 @@ class Graphics(ctk.CTkFrame):
             self.error = f"No se pudo crear la sesión: {error}"
             return
         self.error = ""
+        self._msg_until = 0.0  # borra avisos viejos ("No hay sesión para exportar", etc.)
         self.viewing = None
         self._show_window("30 s")
 
@@ -428,7 +420,6 @@ class Graphics(ctk.CTkFrame):
                                      hover_color="#15803d" if paused else "#b45309")
             self.btn_stop.configure(state="normal" if active else "disabled", fg_color=RED if active else off)
             self.entry_name.configure(state="disabled" if active else "normal")
-            self.rate.configure(state="disabled" if active else "normal")
             text, color = ("PAUSADO", AMBER) if paused else ("REGISTRANDO", GREEN) if active else ("DETENIDO", GRAY)
             self.pill.configure(text=text, fg_color=color)
             if historic:
@@ -524,11 +515,8 @@ class Graphics(ctk.CTkFrame):
         text = f"{ok} de {total} activos" + (f" · {stale} sin señal" if stale else "")
         show("Sensores", text, GREEN if ok == total else RED if stale else GRAY if ok == 0 else AMBER)
 
-        if self.error:
-            show("Adquisición", self.error[:40], RED)
-        else:
-            show("Adquisición", "Pausada" if paused else "Registrando" if active else "Detenida",
-                 AMBER if paused else GREEN if active else GRAY)
+        if self.error and time.monotonic() >= self._msg_until:  # errores de disco: junto a "Exportar"
+            self._say(self.error, RED)
 
     # === exportacion ===========================================================
     def export_to(self, session, path):
@@ -537,18 +525,20 @@ class Graphics(ctk.CTkFrame):
             return ss.export_xlsx(session, path)
         return ss.export_csv(session, path)
 
-    def _export(self, extension):
+    def _export(self):
+        """Un solo boton: el formato (Excel por defecto o CSV) se elige en el cuadro de guardar."""
         session = self.viewing or self.session
         if session is None:
             self._say("No hay sesión para exportar: inicia una primero.", AMBER)
             return
         os.makedirs(self.store.export_dir, exist_ok=True)
-        kind = ("Excel", "*.xlsx") if extension == ".xlsx" else ("CSV", "*.csv")
         path = filedialog.asksaveasfilename(parent=self, title="Exportar sesión", initialdir=self.store.export_dir,
-                                            initialfile=ss.export_name(session, extension),
-                                            defaultextension=extension, filetypes=[kind])
+                                            initialfile=ss.export_name(session, ".xlsx"), defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx"), ("CSV", "*.csv")])
         if not path:
             return
+        if not path.lower().endswith((".xlsx", ".csv")):
+            path += ".xlsx"
         try:
             self.export_to(session, path)
         except ImportError:
@@ -557,11 +547,3 @@ class Graphics(ctk.CTkFrame):
             self._say(f"No se pudo guardar (¿archivo abierto?): {error}", RED)
         else:
             self._say(f"Exportado: {os.path.basename(path)} ({len(session)} lecturas)", GREEN)
-
-    def _open_folder(self):
-        folder = self.store.folder
-        os.makedirs(folder, exist_ok=True)
-        if sys.platform == "win32":
-            os.startfile(folder)
-        else:
-            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", folder])
