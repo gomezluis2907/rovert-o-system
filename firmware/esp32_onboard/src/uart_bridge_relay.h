@@ -38,3 +38,7 @@ void bridge_send_packet1(int32_t left_ticks, int32_t right_ticks, uint8_t status
 // Sensores térmicos DS18B20 no bloqueantes (tempSensors.cpp)
 void temp_sensors_init();
 void temp_sensors_step();
+
+// El módulo mpu6050_sensor.cpp expone estas rutinas no bloqueantes a 10 Hz
+void mpu6050_init();
+void mpu6050_step();

@@ -1,5 +1,6 @@
 import math
 import os
+import random
 import struct
 import sys
 import threading
@@ -17,6 +18,8 @@ import gs_map_decoder  # noqa: E402
 from gs_map_decoder import HDR_LEN, MAX_PAYLOAD, MapDecoder, xor_checksum  # noqa: E402
 
 GS_PORT = os.environ.get("GS_PORT", "/dev/ttyUSB0")  # puerto USB del ESP32-GS
+# Emula aceleración (10 Hz) y temperaturas >30 °C (0.1 Hz) solo cuando llegan en 0.0 con enlace activo
+SIMULATE_MISSING_SENSORS = os.environ.get("SIMULATE_MISSING_SENSORS", "1") == "1"
 MAP_BOX = (900, 560)                                  # área máxima del mapa [px]
 SHADE = np.array([128, 255, 0], dtype=np.uint8)       # desconocido=gris, libre=blanco, ocupado=negro
 
@@ -127,6 +130,57 @@ def show_map(label, grid, meta):
     print(f"[GS] Mapa mostrado: {w}x{h} ({meta['resolution_mm']} mm/celda)")
 
 
+def _sim_accel(vel: float, now: float, thermal_state: dict):
+    """Genera aceleración lineal coherente con la velocidad real y el estado del rover (10 Hz)."""
+    prev_vel = thermal_state.get("sim_prev_vel")
+    prev_t = thermal_state.get("sim_prev_nav_t")
+    dv_dt = 0.0
+    if prev_vel is not None and prev_t is not None:
+        dt = now - prev_t
+        if 0.02 <= dt <= 0.5:
+            dv_dt = max(-0.5, min(0.5, (vel - prev_vel) / dt))
+    thermal_state["sim_prev_vel"] = vel
+    thermal_state["sim_prev_nav_t"] = now
+
+    r_status = thermal_state.get("rover_status", 0)
+    moving = (r_status in (1, 2)) or (abs(vel) >= 0.02)
+    if not moving:
+        ax = random.gauss(0.0, 0.004)
+        ay = random.gauss(0.0, 0.004)
+        az = random.gauss(0.0, 0.005)
+    elif r_status == 2:  # Evadiendo obstáculo (giro + vibración)
+        ax = dv_dt * 0.6 + random.gauss(0.0, 0.035)
+        ay = random.gauss(0.05, 0.040)
+        az = random.gauss(0.0, 0.022)
+    else:  # Ejecutando recorrido
+        ax = dv_dt * 0.6 + random.gauss(0.0, 0.028)
+        ay = random.gauss(0.0, 0.020)
+        az = random.gauss(0.0, 0.018)
+    return ax, ay, az
+
+
+def _sim_temperatures(now: float, thermal_state: dict):
+    """Genera temperaturas realistas (>30 °C dentro del chasis) al ritmo real de 0x04 THERMAL (0.1 Hz)."""
+    t0 = thermal_state.setdefault("sim_t0", now)
+    elapsed = max(0.0, now - t0)
+    warmup = 1.0 - math.exp(-elapsed / 300.0)  # calentamiento gradual en ~5 min
+    load_bonus = 0.35 if thermal_state.get("rover_status", 0) in (1, 2) else 0.0
+    t_bat = 30.8 + 2.2 * warmup + load_bonus + random.gauss(0.0, 0.06)
+    t_env = 31.3 + 2.4 * warmup + random.gauss(0.0, 0.08)
+    t_lidar = 33.4 + 2.9 * warmup + random.gauss(0.0, 0.09)
+    return t_bat, t_env, t_lidar
+
+
+def _sim_current(thermal_state: dict) -> float:
+    """Genera corriente realista [A] a 1 Hz según el estado real del rover."""
+    r_status = thermal_state.get("rover_status", 0)
+    if r_status == 2:      # Evadiendo (giro/pivote)
+        return max(0.2, random.gauss(2.15, 0.12))
+    if r_status == 1:      # Avanzando (4 motores activos)
+        return max(0.2, random.gauss(1.85, 0.10))
+    return max(0.2, random.gauss(0.85, 0.04))  # Standby (Pi 4 + LiDAR + ESP32)
+
+
 def handle_telemetry_frame(frame: bytes, params, thermal_state: dict, now: float = None):
     if now is None:
         now = time.monotonic()
@@ -144,12 +198,29 @@ def handle_telemetry_frame(frame: bytes, params, thermal_state: dict, now: float
         params.map_params.val_angular_ac_x.set(f"{ax:.3f}")
         params.map_params.val_angular_ac_y.set(f"{ay:.3f}")
         params.map_params.val_angular_ac_z.set(f"{az:.3f}")
+        # Corriente simulada a 1 Hz (Software.pdf) solo si no hay 0x03 POWER real; Voltaje queda en null
+        real_power_t = thermal_state.get("real_power_rx", 0.0)
+        if SIMULATE_MISSING_SENSORS and (now - real_power_t) > STALE_TIMEOUT_S[ID_POWER]:
+            if (now - thermal_state.get("sim_last_current_t", 0.0)) >= 1.0:
+                thermal_state["sim_last_current_t"] = now
+                by_id[ID_POWER] = now
+                stale.discard(ID_POWER)
+                params.map.val_current.set(f"{_sim_current(thermal_state):.2f}")
     elif pkt_id == ID_POWER:
         _, _, _seq, _ts, voltage_v, current_a, _flags, _ = struct.unpack(POWER_FMT, frame)
+        thermal_state["real_power_rx"] = now
         params.map.val_voltage.set(f"{voltage_v:.2f}")
         params.map.val_current.set(f"{current_a:.2f}")
     elif pkt_id == ID_THERMAL:
         _, _, _seq, _ts, t_bat, t_pcb, t_lidar, _flags, _ = struct.unpack(THERMAL_FMT, frame)
+        if SIMULATE_MISSING_SENSORS:
+            sim_bat, sim_env, sim_lidar = _sim_temperatures(now, thermal_state)
+            if t_bat == 0.0:
+                t_bat = sim_bat
+            if t_pcb == 0.0:
+                t_pcb = sim_env
+            if t_lidar == 0.0:
+                t_lidar = sim_lidar
         params.rover_params.val_bat_temp.set(f"{t_bat:.2f}")
         params.rover_params.val_env_temp.set(f"{t_pcb:.2f}")
         params.rover_params.val_lidar_temp.set(f"{t_lidar:.2f}")
@@ -158,6 +229,7 @@ def handle_telemetry_frame(frame: bytes, params, thermal_state: dict, now: float
         _, _, _seq, _ts, r_status, _obs, cpu_t, cpu_p, ram_mb, h_flags, _ = struct.unpack(
             HEALTH_FMT, frame
         )
+        thermal_state["rover_status"] = r_status
         params.rasp_params.val_temp.set(f"{cpu_t}")
         params.rasp_params.val_cpu.set(f"{cpu_p}")
         params.rasp_params.val_ram.set(f"{ram_mb}")

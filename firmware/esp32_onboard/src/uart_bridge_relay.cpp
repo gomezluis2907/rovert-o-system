@@ -447,6 +447,7 @@ static void bridge_task(void *) {
         espnow_ready = initEspNow();
     }
     temp_sensors_init();
+    mpu6050_init();
 #endif
 
     static SerialFrameParser piParser;
@@ -475,11 +476,16 @@ static void bridge_task(void *) {
         }
 
 #if defined(ARDUINO) && !defined(BRIDGE_HOST_TEST)
-        uint32_t last_health = last_health_tx_ms;
-        uint32_t last_nav    = last_nav_tx_ms;
-
         // Lectura no bloqueante de 3x DS18B20 -> 0x04 THERMAL cada 10 s (0.1 Hz)
         temp_sensors_step();
+
+        // La tarea lee el MPU6050 por I2C y envía 0x02 NAV a 10 Hz
+        mpu6050_step();
+
+        now = millis();
+        uint32_t last_health = last_health_tx_ms;
+        uint32_t last_nav    = last_nav_tx_ms;
+        last_hp              = last_hp_tx_ms;
 
         // Envío automático de 0x05 HEALTH cada 2 s (0.5 Hz) si ningún otro módulo lo llamó
         if (last_health == 0 || (int32_t)(now - last_health) >= 2000) {
@@ -487,8 +493,7 @@ static void bridge_task(void *) {
             last_hp = millis();
         }
 
-        // Envío automático de 0x02 NAV a 10 Hz con la velocidad de /odom si la Pi está activa
-        // y el driver BNO085 externo aún no ha llamado a bridge_send_nav()
+        // El respaldo de 0x02 NAV envía ceros a 10 Hz si el MPU6050 no transmitió
         if (bridge_last_pi_ms != 0 && (last_nav == 0 || (int32_t)(now - last_nav) >= 100)) {
             bridge_send_nav(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
             last_hp = millis();

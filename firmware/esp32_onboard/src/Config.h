@@ -20,9 +20,13 @@ constexpr uint8_t ESPNOW_WIFI_CHANNEL = 1;
 #if CONFIG_IDF_TARGET_ESP32S3
 constexpr int PI_UART_RX_PIN = 1;  // ESP32 RX <- Raspberry Pi TX (GPIO 14 / Pin 8)
 constexpr int PI_UART_TX_PIN = 2;  // ESP32 TX -> Raspberry Pi RX (GPIO 15 / Pin 10)
+constexpr int I2C_SDA_PIN    = 8;  // El bus I2C compartido usa este pin de datos
+constexpr int I2C_SCL_PIN    = 9;  // El bus I2C compartido usa este pin de reloj
 #else
 constexpr int PI_UART_RX_PIN = 34; // ESP32 RX <- Raspberry Pi TX (GPIO 14 / Pin 8)
 constexpr int PI_UART_TX_PIN = 23; // ESP32 TX -> Raspberry Pi RX (GPIO 15 / Pin 10)
+constexpr int I2C_SDA_PIN    = 15; // El bus I2C compartido en WROOM usa este pin de datos
+constexpr int I2C_SCL_PIN    = 5;  // El bus I2C compartido en WROOM usa este pin de reloj
 #endif
 constexpr uint32_t PI_UART_BAUD = 115200;
 
